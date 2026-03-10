@@ -4,6 +4,44 @@
 #include <Wire.h> 
 #include<math.h>
 #include <LiquidCrystal_I2C.h>
+#include "EspUsbHost.h"
+
+// ======================= Barcode Related ==================//
+#define BARCODE_MAX_LEN 64
+char barcodeBuffer[BARCODE_MAX_LEN];
+char lastBarcode[BARCODE_MAX_LEN];
+volatile bool barcodeReady = false;
+
+uint8_t indexPos = 0;
+class MyEspUsbHost : public EspUsbHost {
+
+    void onKeyboardKey(uint8_t ascii, uint8_t keycode, uint8_t modifier) {
+
+        // Ignore empty reports (key release)
+        if (keycode == 0) return;
+
+        // ENTER → barcode complete
+        if (ascii == '\r') {
+            if (indexPos > 0) {
+            barcodeBuffer[indexPos] = '\0';
+            strcpy(lastBarcode, barcodeBuffer);
+            barcodeReady = true;
+            indexPos = 0;
+            }
+            return;
+        }
+
+        // Accept only numeric characters (barcode safe filtering)
+        if (ascii >= '0' && ascii <= '9') {
+
+            if (indexPos < BARCODE_MAX_LEN - 1) {
+            barcodeBuffer[indexPos++] = ascii;
+            }
+        }
+    }
+};
+
+MyEspUsbHost usbHost;
 
 // ---------------- PIN CONFIG ----------------
 #define LOADCELL_DOUT_PIN 1
@@ -48,7 +86,7 @@ HX711 scale;
 // ---------------- QUEUES ----------------
 QueueHandle_t rawWeightQueue;
 QueueHandle_t stableWeightQueue;
-QueueHandle_t barcodeQueue;
+QueueHandle_t barcodeQueue; // holds last scanned barcode
 
 // ---------------- CALIBRATION ----------------
 float calibrationFactor; // Default factor if not set
@@ -66,7 +104,7 @@ float alpha = 0.2;
 TaskHandle_t hx711TaskHandle;
 TaskHandle_t filterTaskHandle;
 TaskHandle_t serialTaskHandle;
-TaskHandle_t barCodeTaskHandle;
+TaskHandle_t barcodeTaskHandle;
 
 
 // =================================================
@@ -88,7 +126,6 @@ float movingAverage(float newValue)
     return sum / MOVING_AVG_SIZE;
 }
 
-
 // =================================================
 // EXPONENTIAL FILTER
 // =================================================
@@ -97,7 +134,6 @@ float exponentialFilter(float newValue)
     expFilteredWeight = alpha * newValue + (1 - alpha) * expFilteredWeight;
     return expFilteredWeight;
 }
-
 
 // =================================================
 // HX711 TASK
@@ -120,7 +156,6 @@ void hx711Task(void *param)
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
-
 
 // =================================================
 // FILTER TASK
@@ -162,8 +197,41 @@ void filterTask(void *param)
     }
 }
 
+
+// =================================================
+// BARCODE TASK
 // =================================================
 
+void barcodeTask(void *param)
+{
+    const int maxLen = 64;
+    char barcode[maxLen];
+    
+    for (;;)
+    {
+        usbHost.task(); // keep USB host alive
+        
+        if (barcodeReady)
+        {
+            barcodeReady = false;
+            
+            strncpy(barcode, lastBarcode, maxLen);
+            barcode[maxLen-1] = '\0';
+            
+            // send to queue
+            xQueueSend(barcodeQueue, &barcode, portMAX_DELAY);
+            
+            // reset for next scan
+            memset(lastBarcode, 0, maxLen);
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(50)); // small delay
+    }
+}
+
+// =================================================
+// SERIAL TASK
+// =================================================
 void serialTask(void *param)
 {
     float weight;
@@ -175,40 +243,44 @@ void serialTask(void *param)
     char lastLCD[16] = "";
     char currentLCD[16];
 
-    static int removeCounter = 0;
+    const bool use_barcode = true;  // enable barcode wait
+    char scannedBarcode[64];
 
-    for(;;)
+    const float nearZeroThreshold = 1.0; // readings within ±1 g are considered zero
+    const float negativeLimit = -5.0;    // negatives less than this are valid
+
+    static bool barcodeProcessed = false; // NEW: track if barcode already read for current weight
+
+    for (;;)
     {
-        if(xQueueReceive(stableWeightQueue, &weight, portMAX_DELAY))
+        if (xQueueReceive(stableWeightQueue, &weight, portMAX_DELAY))
         {
-
-            // ===============================
-            // HANDLE NEGATIVE NOISE
-            // ===============================
-            if(weight < 0.0)
+            // -----------------------
+            // SNAP NEAR ZERO
+            // -----------------------
+            if (weight > -nearZeroThreshold && weight < nearZeroThreshold)
             {
-                if(weight < -2.0)
-                {
-                    Serial.println("Negative weight detected!");
-                }
-                else
-                {
-                    weight = 0.0;
-                }
+                weight = 0.0;
+            }
+            else if (weight < negativeLimit)
+            {
+                // keep large negative readings as-is
             }
 
-            // ===============================
+            // -----------------------
             // UNLOCK IF WEIGHT REMOVED
-            // ===============================
-            if(weightLocked)
+            // -----------------------
+            static int removeCounter = 0;
+
+            if (weightLocked)
             {
-                if(weight < removeThreshold)
+                if (weight < removeThreshold)
                 {
                     removeCounter++;
-
-                    if(removeCounter > 3)
+                    if (removeCounter > 3)
                     {
                         weightLocked = false;
+                        barcodeProcessed = false; // allow barcode for next weight
                         removeCounter = 0;
                         Serial.println("Scale reset");
                     }
@@ -219,50 +291,58 @@ void serialTask(void *param)
                 }
             }
 
-            // ===============================
-            // IF LOCKED → SHOW LOCKED VALUE
-            // ===============================
-            if(weightLocked)
+            // -----------------------
+            // CHECK STABILITY & LOCK
+            // -----------------------
+            if (!weightLocked && weight > minLockWeight && fabs(weight - lastWeight) < stabilityThreshold)
             {
-                snprintf(currentLCD, sizeof(currentLCD), "%7.3f KG", lockedWeight/1000.0);
-
-                if(strcmp(currentLCD, lastLCD) != 0)
-                {
-                    lcd.setCursor(4,1);
-                    lcd.print(currentLCD);
-                    strcpy(lastLCD, currentLCD);
-                }
-
-                continue;
-            }
-
-            // ===============================
-            // STABILITY DETECTION
-            // ===============================
-            if(weight > minLockWeight && fabs(weight - lastWeight) < stabilityThreshold)
-            {
-                if(!stabilityTimerStarted)
+                if (!stabilityTimerStarted)
                 {
                     stableStartTime = millis();
                     stabilityTimerStarted = true;
                 }
 
-                if(millis() - stableStartTime >= stableTime)
+                if (millis() - stableStartTime >= stableTime)
                 {
                     lockedWeight = weight;
                     weightLocked = true;
 
-                    Serial.print("Weight: ");
-                    Serial.print(lockedWeight/1000.0,3);
+                    Serial.print("Weight locked: ");
+                    Serial.print(lockedWeight / 1000.0, 3);
                     Serial.println(" KG");
 
-                    snprintf(currentLCD, sizeof(currentLCD), "%7.3f KG", lockedWeight/1000.0);
-
-                    lcd.setCursor(4,1);
+                    snprintf(currentLCD, sizeof(currentLCD), "%7.3f KG", lockedWeight / 1000.0);
+                    lcd.setCursor(4, 1);
                     lcd.print(currentLCD);
                     strcpy(lastLCD, currentLCD);
 
                     stabilityTimerStarted = false;
+
+                    // -----------------------
+                    // WAIT FOR BARCODE IF ENABLED AND NOT PROCESSED
+                    // -----------------------
+                    if (use_barcode && !barcodeProcessed)
+                    {
+                        while (xQueueReceive(barcodeQueue, &scannedBarcode, portMAX_DELAY) != pdTRUE)
+                        {
+                            // live LCD while waiting
+                            snprintf(currentLCD, sizeof(currentLCD), "%7.3f KG", lockedWeight / 1000.0);
+                            if (strcmp(currentLCD, lastLCD) != 0)
+                            {
+                                lcd.setCursor(4, 1);
+                                lcd.print(currentLCD);
+                                strcpy(lastLCD, currentLCD);
+                            }
+                            vTaskDelay(pdMS_TO_TICKS(50));
+                        }
+
+                        Serial.print("Weight: ");
+                        Serial.print(lockedWeight / 1000.0, 3);
+                        Serial.print(" KG, Barcode: ");
+                        Serial.println(scannedBarcode);
+
+                        barcodeProcessed = true; // mark as done for this weight
+                    }
                 }
             }
             else
@@ -270,27 +350,24 @@ void serialTask(void *param)
                 stabilityTimerStarted = false;
             }
 
-            // ===============================
+            // -----------------------
             // LIVE LCD BEFORE LOCK
-            // ===============================
-            snprintf(currentLCD, sizeof(currentLCD), "%7.3f KG", weight/1000.0);
-
-            if(strcmp(currentLCD, lastLCD) != 0)
+            // -----------------------
+            if (!weightLocked || !barcodeProcessed)
             {
-                lcd.setCursor(4,1);
-                lcd.print(currentLCD);
-                strcpy(lastLCD, currentLCD);
+                snprintf(currentLCD, sizeof(currentLCD), "%7.3f KG", weight / 1000.0);
+                if (strcmp(currentLCD, lastLCD) != 0)
+                {
+                    lcd.setCursor(4, 1);
+                    lcd.print(currentLCD);
+                    strcpy(lastLCD, currentLCD);
+                }
             }
 
             lastWeight = weight;
         }
     }
 }
-
-// =================================================
-// BARCODE TASK
-// =================================================
-
 
 // =================================================
 // CALIBRATION ROUTINE
@@ -427,6 +504,11 @@ void runCalibration()
 void setup()
 {
     Serial.begin(115200);
+    delay(500);
+
+     // USB Host Setup
+    usbHost.begin();
+    usbHost.setHIDLocal(HID_LOCAL_US);
 
     pinMode(MODE_BUTTON_PIN,INPUT_PULLUP);
 
@@ -459,6 +541,7 @@ void setup()
     // Create queues
     rawWeightQueue = xQueueCreate(10,sizeof(float));
     stableWeightQueue = xQueueCreate(5,sizeof(float));
+    barcodeQueue = xQueueCreate(5,sizeof(barcodeBuffer));
 
     // Create tasks
     xTaskCreatePinnedToCore(
@@ -486,6 +569,15 @@ void setup()
         NULL,
         1,
         &serialTaskHandle,
+        1);
+
+    xTaskCreatePinnedToCore(
+        barcodeTask,
+        "Barcode Task",
+        4096,
+        NULL,
+        2,
+        &barcodeTaskHandle,
         1);
 }
 
