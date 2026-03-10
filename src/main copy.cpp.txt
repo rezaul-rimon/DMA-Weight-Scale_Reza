@@ -1,0 +1,473 @@
+#include <Arduino.h>
+#include "HX711.h"
+#include <Preferences.h>
+#include <Wire.h> 
+#include <LiquidCrystal_I2C.h>
+
+// ---------------- PIN CONFIG ----------------
+#define LOADCELL_DOUT_PIN 1
+#define LOADCELL_SCK_PIN  2 
+#define MODE_BUTTON_PIN   4
+
+float lockedWeight = 0;
+bool weightLocked = false;
+
+bool isZero = false;
+const float minLockWeight = 100.0;
+const float removeThreshold = 50.0;
+const float stabilityThreshold = 5.0;
+const int stableTime = 2000;
+
+// ---------------- LCD CONFIG ----------------
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // Set the LCD I2C address and dimensions
+
+Preferences preferences;
+
+// Save factor
+void saveCalibrationFactor(float factor) {
+    preferences.begin("scale", false);
+    preferences.putFloat("calibFactor", factor);
+    preferences.end();
+}
+
+// Load factor
+float loadCalibrationFactor(float defaultFactor) {
+    preferences.begin("scale", true);
+    float factor = preferences.getFloat("calibFactor", defaultFactor);
+    preferences.end();
+    Serial.print("Loaded Calibration Factor: ");
+    Serial.println(factor, 6);
+    return factor;
+}
+
+
+// ---------------- HX711 ----------------
+HX711 scale;
+
+// ---------------- QUEUES ----------------
+QueueHandle_t rawWeightQueue;
+QueueHandle_t stableWeightQueue;
+
+// ---------------- CALIBRATION ----------------
+float calibrationFactor; // Default factor if not set
+
+// ---------------- FILTER VARIABLES ----------------
+#define MOVING_AVG_SIZE 10
+
+float weightBuffer[MOVING_AVG_SIZE];
+int bufferIndex = 0;
+
+float expFilteredWeight = 0;
+float alpha = 0.2;
+
+// ---------------- TASK HANDLES ----------------
+TaskHandle_t hx711TaskHandle;
+TaskHandle_t filterTaskHandle;
+TaskHandle_t serialTaskHandle;
+
+
+// =================================================
+// MOVING AVERAGE FILTER
+// =================================================
+float movingAverage(float newValue)
+{
+    weightBuffer[bufferIndex] = newValue;
+
+    bufferIndex++;
+    if(bufferIndex >= MOVING_AVG_SIZE)
+        bufferIndex = 0;
+
+    float sum = 0;
+
+    for(int i=0;i<MOVING_AVG_SIZE;i++)
+        sum += weightBuffer[i];
+
+    return sum / MOVING_AVG_SIZE;
+}
+
+
+// =================================================
+// EXPONENTIAL FILTER
+// =================================================
+float exponentialFilter(float newValue)
+{
+    expFilteredWeight = alpha * newValue + (1 - alpha) * expFilteredWeight;
+    return expFilteredWeight;
+}
+
+
+// =================================================
+// HX711 TASK
+// =================================================
+void hx711Task(void *param)
+{
+    float weight;
+
+    for(;;)
+    {
+        if(scale.is_ready())
+        {
+            weight = scale.get_units(1);
+
+            xQueueSend(rawWeightQueue,&weight,portMAX_DELAY);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(80));
+    }
+}
+
+
+// =================================================
+// FILTER TASK
+// =================================================
+void filterTask(void *param)
+{
+    float raw;
+    float filtered;
+    float lastStable = 0;
+
+    int stableCount = 0;
+    const float threshold = 3.0;
+    const int stableLimit = 5;
+
+    for(;;)
+    {
+        if(xQueueReceive(rawWeightQueue,&raw,portMAX_DELAY))
+        {
+            float avg = movingAverage(raw);
+            filtered = exponentialFilter(avg);
+
+            if(abs(filtered - lastStable) < threshold)
+            {
+                stableCount++;
+            }
+            else
+            {
+                stableCount = 0;
+            }
+
+            lastStable = filtered;
+
+            if(stableCount >= stableLimit)
+            {
+                xQueueSend(stableWeightQueue,&filtered,portMAX_DELAY);
+                stableCount = 0;
+            }
+        }
+    }
+}
+
+
+// =================================================
+// SERIAL TASK
+// =================================================
+void serialTask(void *param)
+{
+    float weight;
+
+    float lastWeight = 0;
+
+    unsigned long stableStartTime = 0;
+    bool stabilityTimerStarted = false;
+
+    char lastLCD[16] = "";
+    char currentLCD[16];
+
+    for(;;)
+    {
+        if(xQueueReceive(stableWeightQueue, &weight, portMAX_DELAY))
+        {
+
+            // ===============================
+            // UNLOCK IF WEIGHT REMOVED
+            // ===============================
+            if(weightLocked && abs(weight) < removeThreshold)
+            {
+                weightLocked = false;
+                Serial.println("Scale reset");
+            }
+
+            if(weight < 0.0)
+            {
+                if(weight < -2.0)
+                {
+                    Serial.println("Negative weight detected!");
+                }
+                else
+                {
+                    // Serial.println("Zeroing scale...");
+                    weight = 0.0;
+                }
+            }
+
+            // ===============================
+            // IF WEIGHT IS LOCKED
+            // ===============================
+            if(weightLocked)
+            {
+                snprintf(currentLCD, sizeof(currentLCD), "%6.3f KG", lockedWeight/1000.0);
+
+                if(strcmp(currentLCD, lastLCD) != 0)
+                {
+                    lcd.setCursor(4,1);
+                    lcd.print(currentLCD);
+                    strcpy(lastLCD, currentLCD);
+                }
+
+                continue;
+            }
+
+            // ===============================
+            // CHECK STABILITY
+            // ===============================
+            if(abs(weight - lastWeight) < stabilityThreshold)
+            {
+                if(!stabilityTimerStarted)
+                {
+                    stableStartTime = millis();
+                    stabilityTimerStarted = true;
+                }
+
+                if(millis() - stableStartTime >= stableTime)
+                {
+                    lockedWeight = weight;
+                    weightLocked = true;
+
+                    if(lockedWeight < minLockWeight)
+                    {
+                        weightLocked = false;
+                        // Serial.println("Weight too low to lock");
+                        continue;
+                    }
+
+                    Serial.print("Weight: ");
+                    Serial.print(lockedWeight/1000.0,3);
+                    Serial.println(" KG");
+                    
+
+                    snprintf(currentLCD, sizeof(currentLCD), "%6.3f KG", lockedWeight/1000.0);
+
+                    lcd.setCursor(4,1);
+                    lcd.print(currentLCD);
+                    strcpy(lastLCD, currentLCD);
+
+                    stabilityTimerStarted = false;
+                }
+            }
+            else
+            {
+                stabilityTimerStarted = false;
+            }
+
+            // ===============================
+            // LIVE LCD BEFORE LOCK
+            // ===============================
+
+            snprintf(currentLCD, sizeof(currentLCD), "%6.3f KG", weight/1000.0);
+
+            if(strcmp(currentLCD, lastLCD) != 0)
+            {
+                lcd.setCursor(4,1);
+                lcd.print(currentLCD);
+                strcpy(lastLCD, currentLCD);
+            }
+
+            lastWeight = weight;
+        }
+    }
+}
+
+
+// =================================================
+// CALIBRATION ROUTINE
+// =================================================
+void runCalibration()
+{
+    Serial.println("\n--- CALIBRATION MODE ---");
+
+    scale.begin(LOADCELL_DOUT_PIN,LOADCELL_SCK_PIN);
+
+    Serial.println("Remove all weight.");
+    delay(5000);
+
+    scale.set_scale();
+    scale.tare();
+
+    Serial.println("Tare complete.");
+
+
+    Serial.println("Place known weight on scale...");
+
+    long rawReading = 0;
+    const long minWeightThreshold = 1000; // grams or approximate raw units
+
+    while (true)
+    {
+        if (scale.is_ready())
+        {
+            rawReading = scale.get_units(10); // or raw value
+
+            // check if weight is actually placed
+            if (abs(rawReading) > minWeightThreshold)
+            {
+                Serial.print("Weight detected! Raw: ");
+                Serial.println(rawReading);
+                break;
+            }
+            else
+            {
+                Serial.println("Waiting for known weight...");
+            }
+        }
+        delay(1000);
+    }
+
+    // Stabilization loop
+    long previous = scale.get_units(10);
+    int stableCount = 0;
+
+    const int stableLimit = 5;      // require 5 stable readings
+    const float threshold = 100.0;    // grams difference allowed
+
+    Serial.println("Stabilizing readings...");
+
+    while(stableCount < stableLimit)
+    {
+        long current = scale.get_units(10);
+
+        Serial.print("Reading: ");
+        Serial.println(current);
+
+        if(abs(current - previous) < threshold)
+        {
+            stableCount++;
+        }
+        else
+        {
+            stableCount = 0;
+        }
+
+        previous = current;
+
+        delay(500);
+    }
+    Serial.println("Reading stabilized.");
+    //=============================================================//
+
+    // Average multiple readings for better accuracy
+    long sum = 0;
+    const int samples = 10;
+
+    Serial.println("Collecting samples for averaging...");
+
+    for(int i=0;i<samples;i++)
+    {
+        long reading = scale.get_units(10);
+
+        Serial.print("Sample ");
+        Serial.print(i+1);
+        Serial.print(": ");
+        Serial.println(reading);
+
+        sum += reading;
+
+        delay(500);
+    }
+
+    rawReading = sum / samples;
+
+    Serial.print("Average reading = ");
+    Serial.println(rawReading);
+    // Calculate calibration factor
+
+    Serial.println("Enter known weight in grams:");
+
+    while(!Serial.available());
+
+    float knownWeight = Serial.parseFloat();
+
+    calibrationFactor = rawReading / knownWeight;
+
+    Serial.print("New Calibration Factor = ");
+    Serial.println(calibrationFactor,6);
+
+    saveCalibrationFactor(calibrationFactor);
+
+    Serial.println("Restart device and update code with this factor.");
+
+    while(true);
+}
+
+
+// =================================================
+// SETUP
+// =================================================
+void setup()
+{
+    Serial.begin(115200);
+
+    pinMode(MODE_BUTTON_PIN,INPUT_PULLUP);
+
+    // Calibration Mode
+    if(digitalRead(MODE_BUTTON_PIN) == LOW)
+    {
+        runCalibration();
+    }
+
+    
+    // Normal Mode
+    Serial.println("\n--- NORMAL MODE ---");
+    
+    scale.begin(LOADCELL_DOUT_PIN,LOADCELL_SCK_PIN);
+    
+    calibrationFactor = loadCalibrationFactor(1.0f); // Default factor if not set
+    scale.set_scale(calibrationFactor);
+    scale.tare();
+
+    lcd.init();                      // initialize the lcd 
+    lcd.backlight();
+    lcd.setCursor(0, 0);
+    lcd.clear();
+    lcd.print("Weight Scale");
+    lcd.setCursor(0, 1);
+    lcd.print("Wt: ");
+    lcd.setCursor(4, 1);
+    lcd.print("--------");
+
+    // Create queues
+    rawWeightQueue = xQueueCreate(10,sizeof(float));
+    stableWeightQueue = xQueueCreate(5,sizeof(float));
+
+    // Create tasks
+    xTaskCreatePinnedToCore(
+        hx711Task,
+        "HX711 Task",
+        4096,
+        NULL,
+        2,
+        &hx711TaskHandle,
+        1);
+
+    xTaskCreatePinnedToCore(
+        filterTask,
+        "Filter Task",
+        4096,
+        NULL,
+        1,
+        &filterTaskHandle,
+        1);
+
+    xTaskCreatePinnedToCore(
+        serialTask,
+        "Serial Task",
+        4096,
+        NULL,
+        1,
+        &serialTaskHandle,
+        1);
+}
+
+
+void loop()
+{
+}
