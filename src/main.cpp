@@ -71,10 +71,10 @@ float lockedWeight = 0;
 bool weightLocked = false;
 
 bool isZero = false;
-const float minLockWeight = 100.0;
-const float removeThreshold = 50.0;
+const float minLockWeight = 50.0;
+const float removeThreshold = 20.0;
 const float stabilityThreshold = 5.0;
-const int stableTime = 1000;
+const int stableTime = 300;
 
 // ---------------- LCD CONFIG ----------------
 LiquidCrystal_I2C lcd(0x27, 16, 2);  // Set the LCD I2C address and dimensions
@@ -112,13 +112,13 @@ QueueHandle_t mqttQueue;
 float calibrationFactor; // Default factor if not set
 
 // ---------------- FILTER VARIABLES ----------------
-#define MOVING_AVG_SIZE 10
+#define MOVING_AVG_SIZE 2
 
 float weightBuffer[MOVING_AVG_SIZE];
 int bufferIndex = 0;
 
 float expFilteredWeight = 0;
-float alpha = 0.2;
+float alpha = 0.65;
 
 // ---------------- TASK HANDLES ----------------
 TaskHandle_t hx711TaskHandle;
@@ -316,7 +316,7 @@ void hx711Task(void *param)
             xQueueSend(rawWeightQueue,&weight,portMAX_DELAY);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -331,7 +331,7 @@ void filterTask(void *param)
 
     int stableCount = 0;
     const float threshold = 3.0;
-    const int stableLimit = 3;
+    const int stableLimit = 2;
 
     for(;;)
     {
@@ -746,7 +746,7 @@ void setup()
         lcd.setCursor(4, 1);
         lcd.print("--------");
     }
-    
+
 
     mqttClient.setServer("broker2.dma-bd.com", 1883);
     // mqttClient.setCallback([](char* topic, byte* payload, unsigned int length) {
