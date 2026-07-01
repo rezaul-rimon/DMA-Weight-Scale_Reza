@@ -1,0 +1,28 @@
+#include <Arduino.h>
+
+#define LED_PIN 2
+
+void setup() {
+    Serial.begin(115200);
+
+    Serial.println();
+    Serial.printf("Chip Model : %s\n", ESP.getChipModel());
+    Serial.printf("Revision   : %d\n", ESP.getChipRevision());
+    Serial.printf("CPU Freq   : %d MHz\n", ESP.getCpuFreqMHz());
+    Serial.printf("Flash Size : %d MB\n", ESP.getFlashChipSize() / (1024 * 1024));
+    Serial.printf("Chip Cores : %d\n", ESP.getChipCores());
+    Serial.printf("SDK Version: %s\n", ESP.getSdkVersion());
+    Serial.printf("Heap Size  : %u\n", ESP.getHeapSize());
+    Serial.printf("Psram Size : %u\n", ESP.getPsramSize());
+
+    pinMode(LED_PIN, OUTPUT);
+}
+
+void loop() {
+
+    digitalWrite(LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(LED_PIN, LOW);
+    delay(500);
+
+}

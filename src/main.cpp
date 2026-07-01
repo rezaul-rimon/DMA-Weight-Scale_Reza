@@ -4,68 +4,13 @@
 #include <Wire.h> 
 #include<math.h>
 #include <LiquidCrystal_I2C.h>
-#include "EspUsbHost.h"
-
-#include <WiFi.h>
-#include <PubSubClient.h>
 
 bool IOT_Mode = false;
 
-#define ADD_BTN_PIN 4
-#define M1_BTN_PIN 5
-#define M2_BTN_PIN 7
-#define M3_BTN_PIN 6
-#define TARE_BTN_PIN 16
-#define ZERO_BTN_PIN 15
-
-#define MQTT_QUEUE_LENGTH 10
-
-struct MqttData {
-    float weight;          // in grams
-    char barcode[64];      // barcode string
-};
-
-
-// ======================= Barcode Related ==================//
-#define BARCODE_MAX_LEN 64
-char barcodeBuffer[BARCODE_MAX_LEN];
-char lastBarcode[BARCODE_MAX_LEN];
-volatile bool barcodeReady = false;
-
-uint8_t indexPos = 0;
-class MyEspUsbHost : public EspUsbHost {
-
-    void onKeyboardKey(uint8_t ascii, uint8_t keycode, uint8_t modifier) {
-
-        // Ignore empty reports (key release)
-        if (keycode == 0) return;
-
-        // ENTER → barcode complete
-        if (ascii == '\r') {
-            if (indexPos > 0) {
-            barcodeBuffer[indexPos] = '\0';
-            strcpy(lastBarcode, barcodeBuffer);
-            barcodeReady = true;
-            indexPos = 0;
-            }
-            return;
-        }
-
-        // Accept only numeric characters (barcode safe filtering)
-        if (ascii >= '0' && ascii <= '9') {
-
-            if (indexPos < BARCODE_MAX_LEN - 1) {
-            barcodeBuffer[indexPos++] = ascii;
-            }
-        }
-    }
-};
-
-MyEspUsbHost usbHost;
-
 // ---------------- PIN CONFIG ----------------
-#define LOADCELL_DOUT_PIN 1
-#define LOADCELL_SCK_PIN  2 
+#define LOADCELL_DOUT_PIN 18
+#define LOADCELL_SCK_PIN  19
+#define ADD_BTN_PIN 25
 
 float lockedWeight = 0;
 bool weightLocked = false;
@@ -98,7 +43,6 @@ float loadCalibrationFactor(float defaultFactor) {
     return factor;
 }
 
-
 // ---------------- HX711 ----------------
 HX711 scale;
 
@@ -124,157 +68,12 @@ float alpha = 0.65;
 TaskHandle_t hx711TaskHandle;
 TaskHandle_t filterTaskHandle;
 TaskHandle_t serialTaskHandle;
-TaskHandle_t barcodeTaskHandle;
-TaskHandle_t wifiMqttTaskHandle;
-TaskHandle_t mqttSendTaskHandle;
 //=================================================//
-
-WiFiClient espClient;
-PubSubClient mqttClient(espClient);
-
-void wifiMqttTask(void *param)
-{
-    for (;;)
-    {
-        // WiFi check
-        if (WiFi.status() != WL_CONNECTED)
-        {
-            lcd.setCursor(14, 0);
-            lcd.print("-");
-            Serial.println("Reconnecting WiFi...");
-            // WiFi.begin("DMA-Link3-2Gn", "dmabd987");
-            WiFi.begin("Reza", "rezakhan");
-            while (WiFi.status() != WL_CONNECTED)
-            {
-                Serial.print(".");
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            }
-            Serial.println("\nWiFi Connected!");
-            lcd.setCursor(14, 0);
-            lcd.print("W");
-        }
-
-        // MQTT check
-        if (!mqttClient.connected())
-        {
-            lcd.setCursor(15, 0);
-            lcd.print("-");
-            Serial.println("Reconnecting MQTT...");
-            while (!mqttClient.connected())
-            {
-                if (mqttClient.connect("ESP32_Scale", "broker2", "Secret!@#$1234"))
-                {
-                    Serial.println("MQTT Connected!");
-                    lcd.setCursor(15, 0);
-                    lcd.print("M");
-                }
-                else
-                {
-                    Serial.print("Failed rc=");
-                    Serial.print(mqttClient.state());
-                    Serial.println(" Retrying in 2s...");
-                    vTaskDelay(pdMS_TO_TICKS(2000));
-                }
-            }
-        }
-
-        // MUST call loop() to process MQTT messages
-        mqttClient.loop();
-
-        vTaskDelay(pdMS_TO_TICKS(100)); // small delay, fast enough for loop
-    }
-}
-
-
-void mqttSendTask(void *param)
-{
-    MqttData data;
-
-    for (;;)
-    {
-        //Only send if MQTT is connected
-        if (mqttClient.connected())
-        {
-            if (xQueueReceive(mqttQueue, &data, portMAX_DELAY))
-            {
-                #define DEVICE_ID "1285002603110001"
-
-                char payload[128];
-
-                // Device_ID,weight,barcode
-                snprintf(payload, sizeof(payload), "%s,%.2f,%s",
-                        DEVICE_ID,
-                        data.weight,
-                        data.barcode);
-
-                mqttClient.publish("Pathao/WeightScale/PUB", payload);
-
-                Serial.print("I am from Mqtt Queue: ");
-                Serial.println(payload);
-                lcd.setCursor(11, 0);
-                lcd.print("DS");
-            }
-            
-        }
-        else
-        {
-            // MQTT not connected, skip sending for now, will retry next data
-            // Serial.println("MQTT not connected, waiting...");
-        }
-    }
-}
-
-/*
-void wifiMqttTask(void *param)
-{
-    for (;;)
-    {
-        // WiFi check
-        if (WiFi.status() != WL_CONNECTED)
-        {
-            Serial.println("Reconnecting WiFi...");
-            WiFi.begin("DMA-Link3-2Gn", "dmabd987");
-            while (WiFi.status() != WL_CONNECTED)
-            {
-                Serial.print(".");
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            }
-            Serial.println("\nWiFi Connected!");
-        }
-
-        // MQTT check
-        if (!mqttClient.connected())
-        {
-            Serial.println("Reconnecting MQTT...");
-            while (!mqttClient.connected())
-            {
-                if (mqttClient.connect("ESP32_Scale", "broker2.dma-bd.com", "Secret!@#$1234"))
-                {
-                    Serial.println("MQTT Connected!");
-                }
-                else
-                {
-                    Serial.print("Failed rc=");
-                    Serial.print(mqttClient.state());
-                    Serial.println(" Retrying in 2s...");
-                    vTaskDelay(pdMS_TO_TICKS(2000));
-                }
-            }
-        }
-
-        // MUST call loop() to process MQTT messages
-        mqttClient.loop();
-
-        vTaskDelay(pdMS_TO_TICKS(100)); // small delay, fast enough for loop
-    }
-}
-*/
 
 // =================================================
 // MOVING AVERAGE FILTER
 // =================================================
-float movingAverage(float newValue)
-{
+float movingAverage(float newValue) {
     weightBuffer[bufferIndex] = newValue;
 
     bufferIndex++;
@@ -292,8 +91,7 @@ float movingAverage(float newValue)
 // =================================================
 // EXPONENTIAL FILTER
 // =================================================
-float exponentialFilter(float newValue)
-{
+float exponentialFilter(float newValue) {
     expFilteredWeight = alpha * newValue + (1 - alpha) * expFilteredWeight;
     return expFilteredWeight;
 }
@@ -301,8 +99,7 @@ float exponentialFilter(float newValue)
 // =================================================
 // HX711 TASK
 // =================================================
-void hx711Task(void *param)
-{
+void hx711Task(void *param) {
     scale.set_gain(128);
 
     float weight;
@@ -323,8 +120,7 @@ void hx711Task(void *param)
 // =================================================
 // FILTER TASK
 // =================================================
-void filterTask(void *param)
-{
+void filterTask(void *param) {
     float raw;
     float filtered;
     float lastStable = 0;
@@ -362,41 +158,9 @@ void filterTask(void *param)
 
 
 // =================================================
-// BARCODE TASK
-// =================================================
-
-void barcodeTask(void *param)
-{
-    const int maxLen = 64;
-    char barcode[maxLen];
-    
-    for (;;)
-    {
-        usbHost.task(); // keep USB host alive
-        
-        if (barcodeReady)
-        {
-            barcodeReady = false;
-            
-            strncpy(barcode, lastBarcode, maxLen);
-            barcode[maxLen-1] = '\0';
-            
-            // send to queue
-            xQueueSend(barcodeQueue, &barcode, portMAX_DELAY);
-            
-            // reset for next scan
-            memset(lastBarcode, 0, maxLen);
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(50)); // small delay
-    }
-}
-
-// =================================================
 // SERIAL TASK
 // =================================================
-void serialTask(void *param)
-{
+void serialTask(void *param) {
     float weight;
     float lastWeight = 0;
 
@@ -416,8 +180,7 @@ void serialTask(void *param)
 
     for (;;)
     {
-        if (xQueueReceive(stableWeightQueue, &weight, portMAX_DELAY))
-        {
+        if (xQueueReceive(stableWeightQueue, &weight, portMAX_DELAY)) {
             // -----------------------
             // SNAP NEAR ZERO
             // -----------------------
@@ -443,18 +206,6 @@ void serialTask(void *param)
                     if (removeCounter > 3)
                     {
                         weightLocked = false;
-                        if(IOT_Mode)
-                        {
-                            barcodeProcessed = false; // allow barcode for next weight
-                            if(xQueueReceive(barcodeQueue, &scannedBarcode, 0) == pdTRUE)
-                            {
-                                // Clear any pending barcode if user removed weight before processing
-                                scannedBarcode[0] = '\0';
-                            }
-                            barcodeBuffer[0] = '\0'; // clear barcode buffer
-                            lcd.setCursor(11, 0);
-                            lcd.print("--");
-                        }
                         removeCounter = 0;
                         Serial.println("Scale reset");
                         
@@ -493,38 +244,6 @@ void serialTask(void *param)
                     strcpy(lastLCD, currentLCD);
 
                     stabilityTimerStarted = false;
-
-                    // -----------------------
-                    // WAIT FOR BARCODE IF ENABLED AND NOT PROCESSED
-                    // -----------------------
-                    if (IOT_Mode && !barcodeProcessed)
-                    {
-                        while (xQueueReceive(barcodeQueue, &scannedBarcode, portMAX_DELAY) != pdTRUE)
-                        {
-                            // live LCD while waiting
-                            snprintf(currentLCD, sizeof(currentLCD), "%7.3f KG", lockedWeight / 1000.0);
-                            if (strcmp(currentLCD, lastLCD) != 0)
-                            {
-                                lcd.setCursor(4, 1);
-                                lcd.print(currentLCD);
-                                strcpy(lastLCD, currentLCD);
-                            }
-                            vTaskDelay(pdMS_TO_TICKS(50));
-                        }
-
-                        Serial.print("Weight: ");
-                        Serial.print(lockedWeight / 1000.0, 3);
-                        Serial.print(" KG, Barcode: ");
-                        Serial.println(scannedBarcode);
-
-                        MqttData mData;
-                        mData.weight = lockedWeight / 1000.0; // in KG
-                        strcpy(mData.barcode, scannedBarcode);
-
-                        xQueueSend(mqttQueue, &mData, portMAX_DELAY);
-
-                        barcodeProcessed = true; // mark as done for this weight
-                    }
                 }
             }
             else
@@ -548,28 +267,37 @@ void serialTask(void *param)
 
             lastWeight = weight;
         }
+
+        // Serial.println(analogRead(ADD_BTN_PIN));
     }
 }
 
 // =================================================
 // CALIBRATION ROUTINE
 // =================================================
-void runCalibration()
-{
+void runCalibration() {
     Serial.println("\n--- CALIBRATION MODE ---");
+    lcd.setCursor(0,0);
+    lcd.print("Calibration Mode");
 
     scale.begin(LOADCELL_DOUT_PIN,LOADCELL_SCK_PIN);
 
     Serial.println("Remove all weight.");
+    lcd.setCursor(0,1);
+    lcd.print("Remove all Wt.");
     delay(5000);
 
     scale.set_scale();
     scale.tare();
 
-    Serial.println("Tare complete.");
+    Serial.println(" Tare complete ");
+    lcd.setCursor(0,1);
+    lcd.print(" Tare complete ");
 
 
     Serial.println("Place known weight on scale...");
+    lcd.setCursor(0,1);
+    lcd.print("Place known Wt");
 
     long rawReading = 0;
     const long minWeightThreshold = 1000; // grams or approximate raw units
@@ -584,12 +312,16 @@ void runCalibration()
             if (fabs(rawReading) > minWeightThreshold)
             {
                 Serial.print("Weight detected! Raw: ");
+                lcd.setCursor(0,1);
+                lcd.print("  Wt Detected  ");
                 Serial.println(rawReading);
                 break;
             }
             else
             {
                 Serial.println("Waiting for known weight...");
+                lcd.setCursor(0,1);
+                lcd.print(" Wait for Wt.. ");
             }
         }
         delay(1000);
@@ -603,6 +335,8 @@ void runCalibration()
     const float threshold = 100.0;    // grams difference allowed
 
     Serial.println("Stabilizing readings...");
+    lcd.setCursor(0,1);
+    lcd.print(" Processing... ");
 
     while(stableCount < stableLimit)
     {
@@ -654,6 +388,8 @@ void runCalibration()
     // Calculate calibration factor
 
     Serial.println("Enter known weight in grams:");
+    lcd.setCursor(0,1);
+    lcd.print("Wait for Value ");
 
     while(!Serial.available());
 
@@ -683,82 +419,51 @@ void runCalibration()
 // =================================================
 // SETUP
 // =================================================
-void setup()
-{
+void setup() {
     Serial.begin(115200);
-    delay(500);
+    delay(100);
 
-    pinMode(4, INPUT_PULLUP);
+    Serial.println("===============================");
+    Serial.println(" DMA-PATHAO Smart Weight Scale ");
+    Serial.println("==============================!");
+    Serial.println();
 
-    if(digitalRead(4) == LOW)
-    {
-        // runCalibration();
-        Serial.println("Calibration button pressed. Running calibration...");
-        IOT_Mode = true; // Force USB Serial mode for calibration
+    delay(2000);
+
+     lcd.init();                      // initialize the lcd 
+    lcd.backlight();
+    lcd.setCursor(0, 0);
+    lcd.clear();
+    lcd.print("USB Serial Mode");
+    lcd.setCursor(0, 1);
+    lcd.print("Wt: ");
+    lcd.setCursor(4, 1);
+    lcd.print("--------");
+
+    pinMode(ADD_BTN_PIN, INPUT_PULLUP);
+
+    if(digitalRead(ADD_BTN_PIN) == LOW){
+        Serial.println("===============================");
+        Serial.println("  Device is Calibration Mode!  ");
+        Serial.println("==============================!");
+        Serial.println();
+        runCalibration();
     }
-    else
-    {
-        Serial.println("Normal startup. Calibration button not pressed.");
-    }
 
-    if(IOT_Mode)
-    {
-        // USB Host Setup
-        usbHost.begin();
-        usbHost.setHIDLocal(HID_LOCAL_US);
-    }
+    Serial.println("===============================");
+    Serial.println("     Device is USB-PC Mode!    ");
+    Serial.println("==============================!");
+    Serial.println();
 
-    // Normal Mode
-    // Serial.println("\n--- NORMAL MODE ---");
-    
     scale.begin(LOADCELL_DOUT_PIN,LOADCELL_SCK_PIN);
     
-    calibrationFactor = loadCalibrationFactor(1.0f); // Default factor if not set
+    calibrationFactor = loadCalibrationFactor(100.0f); // Default factor if not set
     scale.set_scale(calibrationFactor);
     scale.tare();
-
-    if(IOT_Mode)
-    {
-        Serial.println("IOT Mode: MQTT tasks will be created");
-        lcd.init();                      // initialize the lcd 
-        lcd.backlight();
-        lcd.setCursor(0, 0);
-        lcd.clear();
-        lcd.print("IOT Mode");
-        lcd.setCursor(0, 1);
-        lcd.print("Wt: ");
-        lcd.setCursor(4, 1);
-        lcd.print("--------");
-
-        lcd.setCursor(11, 0);
-        lcd.print("-- --");
-    }
-    else
-    {
-        Serial.println("USB Serial Mode: Barcode scanning disabled");
-        lcd.init();                      // initialize the lcd 
-        lcd.backlight();
-        lcd.setCursor(0, 0);
-        lcd.clear();
-        lcd.print("USB Serial Mode");
-        lcd.setCursor(0, 1);
-        lcd.print("Wt: ");
-        lcd.setCursor(4, 1);
-        lcd.print("--------");
-    }
-
-
-    mqttClient.setServer("broker2.dma-bd.com", 1883);
-    // mqttClient.setCallback([](char* topic, byte* payload, unsigned int length) {
-    //     // Handle incoming MQTT messages if needed
-    // });
-    mqttClient.setKeepAlive(60);
 
     // Create queues
     rawWeightQueue = xQueueCreate(10,sizeof(float));
     stableWeightQueue = xQueueCreate(5,sizeof(float));
-    barcodeQueue = xQueueCreate(5,sizeof(barcodeBuffer));
-    mqttQueue = xQueueCreate(MQTT_QUEUE_LENGTH, sizeof(MqttData));
 
     // Create tasks
     xTaskCreatePinnedToCore(
@@ -787,40 +492,10 @@ void setup()
         1,
         &serialTaskHandle,
         1);
-
-        if(IOT_Mode == true){
-                Serial.println("IOT Mode: MQTT tasks will be created");
-                xTaskCreatePinnedToCore(
-                    barcodeTask,
-                    "Barcode Task",
-                    4096,
-                    NULL,
-                    2,
-                    &barcodeTaskHandle,
-                    1);
-
-                xTaskCreatePinnedToCore(
-                    wifiMqttTask,
-                    "WiFi MQTT Task",
-                    4096,
-                    NULL,
-                    1,
-                    &wifiMqttTaskHandle,
-                    1);
-
-                xTaskCreatePinnedToCore(
-                    mqttSendTask,
-                    "MQTT Send Task",
-                    4096,
-                    NULL,
-                    1,
-                    &mqttSendTaskHandle,
-                    1);
-        }
     
 }
 
 
-void loop()
-{
+void loop() {
+    // Empty loop since tasks are handling the operations
 }
