@@ -7,6 +7,12 @@
 
 bool IOT_Mode = false;
 
+//In last 4 digit: 1 for MEGA, 6 For 60 KG and 01 for 1st device.
+const char *DeviceID = "12852607011602"; 
+const char *DeviceModel = "MEGA MG-60";
+const char *Release_from_DMA = "01-07-2026";
+const char *FirmwareVersion = "V1.262.1";
+
 // ---------------- PIN CONFIG ----------------
 #define LOADCELL_DOUT_PIN 18
 #define LOADCELL_SCK_PIN  19
@@ -425,6 +431,10 @@ void setup() {
 
     Serial.println("===============================");
     Serial.println(" DMA-PATHAO Smart Weight Scale ");
+    Serial.println(" Device ID: " + String(DeviceID));
+    Serial.println(" Device Model: " + String(DeviceModel));
+    Serial.println(" Release from DMA: " + String(Release_from_DMA));
+    Serial.println(" Firmware: " + String(FirmwareVersion));
     Serial.println("==============================!");
     Serial.println();
 
