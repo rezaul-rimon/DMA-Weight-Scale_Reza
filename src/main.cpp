@@ -5,13 +5,12 @@
 #include<math.h>
 #include <LiquidCrystal_I2C.h>
 
-bool IOT_Mode = false;
-
 //In last 4 digit: 1 for MEGA, 6 For 60 KG and 01 for 1st device.
-const char *DeviceID = "12852607011602"; 
-const char *DeviceModel = "MEGA MG-60";
+const char *DeviceID = "12852607011402"; 
+const char *DeviceModel = "MEGA-UNIQUE-MU-35";
 const char *Release_from_DMA = "01-07-2026";
 const char *FirmwareVersion = "V1.262.1";
+const int DeviceCapasity = 40; // in KG
 
 // ---------------- PIN CONFIG ----------------
 #define LOADCELL_DOUT_PIN 18
@@ -22,9 +21,9 @@ float lockedWeight = 0;
 bool weightLocked = false;
 
 bool isZero = false;
-const float minLockWeight = 50.0;
-const float removeThreshold = 20.0;
-const float stabilityThreshold = 5.0;
+const float minLockWeight = DeviceCapasity; // Equal of device capacity
+const float removeThreshold = DeviceCapasity * 0.50; // 50% of device capacity
+const float stabilityThreshold = DeviceCapasity * 0.25; // 25% of device capacity
 const int stableTime = 300;
 
 // ---------------- LCD CONFIG ----------------
@@ -132,7 +131,7 @@ void filterTask(void *param) {
     float lastStable = 0;
 
     int stableCount = 0;
-    const float threshold = 3.0;
+    const float threshold = DeviceCapasity * 0.15;
     const int stableLimit = 2;
 
     for(;;)
@@ -179,13 +178,10 @@ void serialTask(void *param) {
     const bool use_barcode = true;  // enable barcode wait
     char scannedBarcode[64];
 
-    const float nearZeroThreshold = 1.0; // readings within ±1 g are considered zero
+    const float nearZeroThreshold = 2.0; // readings within ±2 g are considered zero
     const float negativeLimit = -5.0;    // negatives less than this are valid
 
-    static bool barcodeProcessed = false; // NEW: track if barcode already read for current weight
-
-    for (;;)
-    {
+    for (;;) {
         if (xQueueReceive(stableWeightQueue, &weight, portMAX_DELAY)) {
             // -----------------------
             // SNAP NEAR ZERO
@@ -260,11 +256,9 @@ void serialTask(void *param) {
             // -----------------------
             // LIVE LCD BEFORE LOCK
             // -----------------------
-            if (!weightLocked || !barcodeProcessed)
-            {
+            if (!weightLocked) {
                 snprintf(currentLCD, sizeof(currentLCD), "%7.3f KG", weight / 1000.0);
-                if (strcmp(currentLCD, lastLCD) != 0)
-                {
+                if (strcmp(currentLCD, lastLCD) != 0) {
                     lcd.setCursor(4, 1);
                     lcd.print(currentLCD);
                     strcpy(lastLCD, currentLCD);
@@ -435,6 +429,7 @@ void setup() {
     Serial.println(" Device Model: " + String(DeviceModel));
     Serial.println(" Release from DMA: " + String(Release_from_DMA));
     Serial.println(" Firmware: " + String(FirmwareVersion));
+    Serial.println(" Device Capacity: " + String(DeviceCapasity) + " KG");
     Serial.println("==============================!");
     Serial.println();
 
