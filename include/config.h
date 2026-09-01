@@ -1,13 +1,10 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// Device identification
-// constexpr const char* DEVICE_ID = "12852607011402";
-// constexpr const char* DEVICE_MODEL = "MEGA-UNIQUE-MU-35";
-// constexpr const char* RELEASE_DATE = "01-07-2026";
-// constexpr const char* FIRMWARE_VERSION = "V1.262.1";
-// constexpr float DEVICE_CAPACITY_KG = 40.0f;
 
+// --------------------------
+// Device Identification
+// --------------------------
 constexpr const char* DEVICE_ID = "12850001";
 constexpr const char* APPID = "1285.2";
 constexpr const char* DEVICE_MODEL = "MEGA-T-20";
@@ -18,49 +15,71 @@ constexpr const char* FIRMWARE_VERSION = "V2.263.1";
 constexpr const char* HARDWARE_VERSION = "V1.263.1";
 constexpr float DEVICE_CAPACITY_KG = 20.0f;
 
-// Pin definitions
+
+// --------------------------
+// Pin Definitions
+// --------------------------
 constexpr int LOADCELL_DOUT_PIN = 18;
 constexpr int LOADCELL_SCK_PIN = 19;
-constexpr int ADD_BTN_PIN = 25;
+constexpr int ADD_BTN_PIN = 25;                      // Button for calibration mode
 
-// LCD
-constexpr uint8_t LCD_ADDR = 0x27;
+// --------------------------
+// LCD Configuration
+// --------------------------
+constexpr uint8_t LCD_ADDR = 0x27;                   // I2C address
 constexpr uint8_t LCD_COLS = 16;
 constexpr uint8_t LCD_ROWS = 2;
 
-// Filter parameters
-constexpr int MOVING_AVG_SIZE = 2;
-constexpr float ALPHA = 0.65f;
+// --------------------------
+// Filter Parameters
+// --------------------------
+constexpr int MOVING_AVG_SIZE = 2;                   // Number of samples for moving average
+constexpr int MEDIAN_SIZE = 3;                       // Number of samples for median filter (odd recommended)
+constexpr int TRIMMED_MEAN_SIZE = 5;                 // Total samples for trimmed mean
+constexpr int TRIMMED_DISCARD = 1;                   // Discard lowest and highest N samples
+constexpr float ALPHA = 0.65f;                       // Exponential filter smoothing factor (0..1)
 
-// Median filter
-constexpr int MEDIAN_SIZE = 3;          // Use 3 or 5 samples
+// Stability detection threshold for filter task (in grams)
+constexpr float FILTER_STABILITY_THRESHOLD_GRAMS = DEVICE_CAPACITY_KG * 0.15f;
+constexpr int FILTER_STABLE_COUNT = 2;               // Consecutive stable readings required
 
-// Trimmed mean filter
-constexpr int TRIMMED_MEAN_SIZE = 5;    // Total samples
-constexpr int TRIMMED_DISCARD = 1;      // Discard lowest and highest each
+// --------------------------
+// Weight Locking Thresholds (all in grams)
+// --------------------------
+constexpr float MIN_LOCK_WEIGHT = DEVICE_CAPACITY_KG;               // 40,000 g
+constexpr float REMOVE_THRESHOLD = DEVICE_CAPACITY_KG * 0.50f;      // 20,000 g (50% of capacity)
+constexpr float STABILITY_THRESHOLD = DEVICE_CAPACITY_KG;   // 10,000 g (25% of capacity)
+constexpr int STABLE_TIME_MS = 300;                   // Time in ms the weight must remain stable before locking
 
-// Weight locking
-constexpr float MIN_LOCK_WEIGHT = DEVICE_CAPACITY_KG;           // kg
-constexpr float REMOVE_THRESHOLD = DEVICE_CAPACITY_KG * 0.50f; // kg
-constexpr float STABILITY_THRESHOLD = DEVICE_CAPACITY_KG * 0.25f; // kg
-constexpr int STABLE_TIME_MS = 300;
+// --------------------------
+// Near-Zero Snapping
+// --------------------------
+constexpr float NEAR_ZERO_THRESHOLD = 2.0f;          // ±2 g considered zero
+constexpr float NEGATIVE_LIMIT = -5.0f;              // Allow negative readings down to -5 g
 
-// Near-zero snapping
-constexpr float NEAR_ZERO_THRESHOLD = 0.002f;  // kg (2 grams)
-constexpr float NEGATIVE_LIMIT = -0.005f;      // kg (-5 grams)
+// --------------------------
+// LCD Update Control
+// --------------------------
+constexpr float LCD_DEADBAND_GRAMS = 5.0f;           // Only update if weight changes by more than 5 g
+constexpr uint32_t LCD_MIN_INTERVAL_MS = 100;        // Minimum time between LCD updates (ms)
 
-// Calibration
-constexpr float DEFAULT_CALIB_FACTOR = 100.0f;
-constexpr long CALIB_MIN_RAW_THRESHOLD = 1000;
-constexpr int CALIB_STABLE_COUNT = 5;
-constexpr float CALIB_STABLE_THRESHOLD = 100.0f;
-constexpr int CALIB_SAMPLE_COUNT = 10;
+// --------------------------
+// Calibration Settings
+// --------------------------
+constexpr float DEFAULT_CALIB_FACTOR = 100.0f;       // Fallback factor if none stored
+constexpr long CALIB_MIN_RAW_THRESHOLD = 1000;       // Raw units to detect that a weight is placed
+constexpr int CALIB_STABLE_COUNT = 5;                // Required stable readings during calibration
+constexpr float CALIB_STABLE_THRESHOLD = 100.0f;     // Allowed variation during stabilization (raw units)
+constexpr int CALIB_SAMPLE_COUNT = 10;               // Number of samples to average for final factor
 
-// Tasks
+// --------------------------
+// Task & Queue Sizes
+// --------------------------
 constexpr int QUEUE_RAW_SIZE = 10;
 constexpr int QUEUE_STABLE_SIZE = 5;
 constexpr uint32_t HX711_TASK_STACK = 4096;
 constexpr uint32_t FILTER_TASK_STACK = 4096;
 constexpr uint32_t SERIAL_TASK_STACK = 4096;
+constexpr uint32_t LCD_TASK_STACK = 2048;
 
 #endif // CONFIG_H

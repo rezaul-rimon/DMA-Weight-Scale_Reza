@@ -5,20 +5,27 @@
 // Constructor / Destructor
 // --------------------------
 WeightScale::WeightScale()
-: lcd_(LCD_ADDR, LCD_COLS, LCD_ROWS),
-    bufferIndex_(0),
-    expFilteredWeight_(0.0f),
-    lockedWeight_(0.0f),
-    weightLocked_(false),
-    isZero_(false),
-    hx711TaskHandle_(nullptr),
-    filterTaskHandle_(nullptr),
-    serialTaskHandle_(nullptr) {
+    : lcd_(LCD_ADDR, LCD_COLS, LCD_ROWS),
+      bufferIndex_(0),
+      expFilteredWeight_(0.0f),
+      lockedWeight_(0.0f),
+      weightLocked_(false),
+      isZero_(false),
+      medianIndex_(0),
+      trimmedIndex_(0),
+      lastDisplayedWeight_(-9999.0f),
+      lastLcdUpdateMs_(0),
+      lastLockedState_(false),
+      hx711TaskHandle_(nullptr),
+      filterTaskHandle_(nullptr),
+      serialTaskHandle_(nullptr),
+      lcdTaskHandle_(nullptr) {
 }
 
 WeightScale::~WeightScale() {
     if (rawQueue_) vQueueDelete(rawQueue_);
     if (stableQueue_) vQueueDelete(stableQueue_);
+    if (lcdQueue_) vQueueDelete(lcdQueue_);
 }
 
 // --------------------------
@@ -32,13 +39,9 @@ bool WeightScale::begin() {
     Serial.println("===============================");
     Serial.println(" DMA-PATHAO Smart Weight Scale ");
     Serial.printf(" Device ID: %s\n", DEVICE_ID);
-     Serial.printf(" APP ID: %s\n", APPID);
     Serial.printf(" Device Model: %s\n", DEVICE_MODEL);
-     Serial.printf(" Batch ID: %s\n", BATCH_ID);
-     Serial.printf(" Manufacturing Date: %s\n", MANUFACTURING_DATE);
     Serial.printf(" Release from DMA: %s\n", RELEASE_DATE);
-    Serial.printf(" Firmware Version: %s\n", FIRMWARE_VERSION);
-    Serial.printf(" Hardware Verion: %s\n", HARDWARE_VERSION);
+    Serial.printf(" Firmware: %s\n", FIRMWARE_VERSION);
     Serial.printf(" Device Capacity: %.2f KG\n", DEVICE_CAPACITY_KG);
     Serial.println("==============================!");
     Serial.println();
@@ -73,25 +76,34 @@ bool WeightScale::begin() {
     // Create queues
     rawQueue_ = xQueueCreate(QUEUE_RAW_SIZE, sizeof(float));
     stableQueue_ = xQueueCreate(QUEUE_STABLE_SIZE, sizeof(float));
-    if (rawQueue_ == nullptr || stableQueue_ == nullptr) {
+    lcdQueue_ = xQueueCreate(5, sizeof(float));
+    if (rawQueue_ == nullptr || stableQueue_ == nullptr || lcdQueue_ == nullptr) {
         Serial.println("Failed to create queues!");
         return false;
     }
 
-    // Create tasks
+    // Create HX711 task (core 0, high priority)
     BaseType_t result = xTaskCreatePinnedToCore(
         hx711TaskWrapper, "HX711", HX711_TASK_STACK,
-        this, 2, &hx711TaskHandle_, 0); // Core 0 for real-time
+        this, 2, &hx711TaskHandle_, 0);
     if (result != pdPASS) return false;
 
+    // Create filter task (core 1)
     result = xTaskCreatePinnedToCore(
         filterTaskWrapper, "Filter", FILTER_TASK_STACK,
-        this, 1, &filterTaskHandle_, 1); // Core 1
+        this, 1, &filterTaskHandle_, 1);
     if (result != pdPASS) return false;
 
+    // Create serial/locking task (core 1)
     result = xTaskCreatePinnedToCore(
         serialTaskWrapper, "Serial", SERIAL_TASK_STACK,
-        this, 1, &serialTaskHandle_, 1); // Core 1
+        this, 1, &serialTaskHandle_, 1);
+    if (result != pdPASS) return false;
+
+    // Create LCD update task (core 1, lower priority)
+    result = xTaskCreatePinnedToCore(
+        lcdTaskWrapper, "LCD", 2048,
+        this, 1, &lcdTaskHandle_, 1);
     if (result != pdPASS) return false;
 
     Serial.println("Device ready");
@@ -203,7 +215,7 @@ void WeightScale::saveCalibrationFactor(float factor) {
 }
 
 // --------------------------
-// Filtering
+// Filtering functions
 // --------------------------
 float WeightScale::movingAverage(float newValue) {
     weightBuffer_[bufferIndex_] = newValue;
@@ -215,16 +227,13 @@ float WeightScale::movingAverage(float newValue) {
     return sum / MOVING_AVG_SIZE;
 }
 
-// Median filter
 float WeightScale::medianFilter(float newValue) {
     medianBuffer_[medianIndex_] = newValue;
     medianIndex_ = (medianIndex_ + 1) % MEDIAN_SIZE;
 
-    // Copy buffer for sorting
     float temp[MEDIAN_SIZE];
     memcpy(temp, medianBuffer_, sizeof(temp));
 
-    // Simple insertion sort (small array)
     for (int i = 1; i < MEDIAN_SIZE; i++) {
         float key = temp[i];
         int j = i - 1;
@@ -234,17 +243,13 @@ float WeightScale::medianFilter(float newValue) {
         }
         temp[j + 1] = key;
     }
-
-    // Return middle element
     return temp[MEDIAN_SIZE / 2];
 }
 
-// Trimmed mean filter
 float WeightScale::trimmedMeanFilter(float newValue) {
     trimmedBuffer_[trimmedIndex_] = newValue;
     trimmedIndex_ = (trimmedIndex_ + 1) % TRIMMED_MEAN_SIZE;
 
-    // Copy and sort
     float temp[TRIMMED_MEAN_SIZE];
     memcpy(temp, trimmedBuffer_, sizeof(temp));
 
@@ -258,7 +263,6 @@ float WeightScale::trimmedMeanFilter(float newValue) {
         temp[j + 1] = key;
     }
 
-    // Average the middle (discard lowest and highest TRIMMED_DISCARD)
     float sum = 0;
     int count = 0;
     for (int i = TRIMMED_DISCARD; i < TRIMMED_MEAN_SIZE - TRIMMED_DISCARD; i++) {
@@ -274,10 +278,10 @@ float WeightScale::exponentialFilter(float newValue) {
 }
 
 // --------------------------
-// Task Wrappers
+// Task wrappers
 // --------------------------
 void WeightScale::hx711TaskWrapper(void* param) {
-    static_cast<WeightScale*>(param)->readHX711();
+    static_cast<WeightScale*>(param)->processHX711();
 }
 
 void WeightScale::filterTaskWrapper(void* param) {
@@ -288,10 +292,14 @@ void WeightScale::serialTaskWrapper(void* param) {
     static_cast<WeightScale*>(param)->processSerialOutput();
 }
 
+void WeightScale::lcdTaskWrapper(void* param) {
+    static_cast<WeightScale*>(param)->processLcdUpdates();
+}
+
 // --------------------------
-// Task Implementations
+// HX711 task
 // --------------------------
-void WeightScale::readHX711() {
+void WeightScale::processHX711() {
     float weight;
     for (;;) {
         if (scale_.is_ready()) {
@@ -302,21 +310,26 @@ void WeightScale::readHX711() {
     }
 }
 
+// --------------------------
+// Filter task
+// --------------------------
 void WeightScale::processFilter() {
     float raw, filtered;
     float lastStable = 0.0f;
     int stableCount = 0;
-    const float threshold = DEVICE_CAPACITY_KG * 0.15f; // kg
+    const float threshold = DEVICE_CAPACITY_KG * 1000.0f * 0.15f; // grams
     const int stableLimit = 2;
 
     for (;;) {
         if (xQueueReceive(rawQueue_, &raw, portMAX_DELAY)) {
-            float avg = movingAverage(raw);
-            // float avg = medianFilter(raw);
-            // float avg = trimmedMeanFilter(raw);
+            // Choose one of the filters below (uncomment the one you want)
+            // float preFiltered = movingAverage(raw);
+            // float preFiltered = medianFilter(raw);
+            float preFiltered = trimmedMeanFilter(raw);  // default
 
-            filtered = exponentialFilter(avg);
+            filtered = exponentialFilter(preFiltered);
 
+            // Stability detection
             if (fabs(filtered - lastStable) < threshold) {
                 stableCount++;
             } else {
@@ -326,24 +339,26 @@ void WeightScale::processFilter() {
 
             if (stableCount >= stableLimit) {
                 xQueueSend(stableQueue_, &filtered, portMAX_DELAY);
+                xQueueSend(lcdQueue_, &filtered, 0);  // non-blocking
                 stableCount = 0;
             }
         }
     }
 }
 
+// --------------------------
+// Serial / locking task
+// --------------------------
 void WeightScale::processSerialOutput() {
     float weight;
     float lastWeight = 0.0f;
     unsigned long stableStartTime = 0;
     bool stabilityTimerStarted = false;
-    char lastLCD[16] = "";
-    char currentLCD[16];
     int removeCounter = 0;
 
     for (;;) {
         if (xQueueReceive(stableQueue_, &weight, portMAX_DELAY)) {
-            // Snap near zero
+            // Snap near zero (2 grams)
             if (weight > -NEAR_ZERO_THRESHOLD && weight < NEAR_ZERO_THRESHOLD) {
                 weight = 0.0f;
             }
@@ -362,7 +377,7 @@ void WeightScale::processSerialOutput() {
                 }
             }
 
-            // Check stability & lock
+            // Check stability & lock (now thresholds are in grams)
             if (!weightLocked_ && weight > MIN_LOCK_WEIGHT &&
                 fabs(weight - lastWeight) < STABILITY_THRESHOLD) {
                 if (!stabilityTimerStarted) {
@@ -372,29 +387,45 @@ void WeightScale::processSerialOutput() {
                 if (millis() - stableStartTime >= STABLE_TIME_MS) {
                     lockedWeight_ = weight;
                     weightLocked_ = true;
-                    Serial.printf("Weight locked: %.3f KG\n", lockedWeight_);
-                    snprintf(currentLCD, sizeof(currentLCD), "%7.3f KG", lockedWeight_);
-                    lcd_.setCursor(4, 1);
-                    lcd_.print(currentLCD);
-                    strcpy(lastLCD, currentLCD);
+                    Serial.printf("Weight locked: %.3f KG\n", lockedWeight_ / 1000.0f); // convert to kg
                     stabilityTimerStarted = false;
                 }
             } else {
                 stabilityTimerStarted = false;
             }
 
-            // Live LCD before lock
-            if (!weightLocked_) {
-                snprintf(currentLCD, sizeof(currentLCD), "%7.3f KG", weight);
-                if (strcmp(currentLCD, lastLCD) != 0) {
-                    lcd_.setCursor(4, 1);
-                    lcd_.print(currentLCD);
-                    strcpy(lastLCD, currentLCD);
-                }
-            }
-
             lastWeight = weight;
         }
-        // Optional: check button for other commands
+    }
+}
+
+// --------------------------
+// LCD update task
+// --------------------------
+void WeightScale::processLcdUpdates() {
+    float weight;
+    unsigned long now;
+    char line[16];
+
+    for (;;) {
+        if (xQueueReceive(lcdQueue_, &weight, portMAX_DELAY)) {
+            now = millis();
+            bool locked = weightLocked_;  // Read shared variable (consider mutex if needed)
+
+            bool forceUpdate = (locked != lastLockedState_);
+            bool significantChange = fabs(weight - lastDisplayedWeight_) > LCD_DEADBAND_GRAMS;
+            bool timeElapsed = (now - lastLcdUpdateMs_) >= LCD_MIN_INTERVAL_MS;
+
+            if (forceUpdate || (significantChange && timeElapsed)) {
+                // Convert grams to kilograms for display
+                snprintf(line, sizeof(line), "%7.3f KG", weight / 1000.0f);
+                lcd_.setCursor(4, 1);
+                lcd_.print(line);
+
+                lastDisplayedWeight_ = weight;
+                lastLcdUpdateMs_ = now;
+                lastLockedState_ = locked;
+            }
+        }
     }
 }

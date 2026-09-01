@@ -8,23 +8,21 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
-#include "config.h"  
+#include "config.h"
 
 class WeightScale {
 public:
     WeightScale();
     ~WeightScale();
 
-    // Initialize hardware, preferences, queues, and tasks
     bool begin();
-
-    // Calibration entry point (call from main if button pressed)
     void startCalibration();
 
-    // Task functions (static wrappers)
+    // Task wrappers
     static void hx711TaskWrapper(void* param);
     static void filterTaskWrapper(void* param);
     static void serialTaskWrapper(void* param);
+    static void lcdTaskWrapper(void* param);
 
 private:
     // Hardware
@@ -35,6 +33,13 @@ private:
     // Queues
     QueueHandle_t rawQueue_;
     QueueHandle_t stableQueue_;
+    QueueHandle_t lcdQueue_;
+
+    // Task handles
+    TaskHandle_t hx711TaskHandle_;
+    TaskHandle_t filterTaskHandle_;
+    TaskHandle_t serialTaskHandle_;
+    TaskHandle_t lcdTaskHandle_;
 
     // Calibration factor
     float calibrationFactor_;
@@ -42,24 +47,23 @@ private:
     // Filtering state
     float weightBuffer_[MOVING_AVG_SIZE];
     int bufferIndex_;
-    
-    float medianBuffer_[MEDIAN_SIZE];
-    int medianIndex_ = 0;
-    
-    float trimmedBuffer_[TRIMMED_MEAN_SIZE];
-    int trimmedIndex_ = 0;
-
     float expFilteredWeight_;
 
-    // Weight locking state
-    float lockedWeight_;
-    bool weightLocked_;
-    bool isZero_; // not used but kept for potential future use
+    // New filter buffers
+    float medianBuffer_[MEDIAN_SIZE];
+    int medianIndex_;
+    float trimmedBuffer_[TRIMMED_MEAN_SIZE];
+    int trimmedIndex_;
 
-    // Task handles
-    TaskHandle_t hx711TaskHandle_;
-    TaskHandle_t filterTaskHandle_;
-    TaskHandle_t serialTaskHandle_;
+    // Weight locking state
+    float lockedWeight_;      // in grams
+    bool weightLocked_;
+    bool isZero_; // unused
+
+    // LCD update state
+    float lastDisplayedWeight_;   // in grams
+    unsigned long lastLcdUpdateMs_;
+    bool lastLockedState_;
 
     // Private methods
     void loadCalibrationFactor(float defaultFactor);
@@ -68,10 +72,11 @@ private:
     float medianFilter(float newValue);
     float trimmedMeanFilter(float newValue);
     float exponentialFilter(float newValue);
-    void processSerialOutput(); // main loop of serial task
-    void processFilter();        // main loop of filter task
-    void readHX711();            // main loop of HX711 task
-    void updateLCD(const char* line1, const char* line2);
+
+    void processHX711();
+    void processFilter();
+    void processSerialOutput();
+    void processLcdUpdates();
 };
 
 #endif // WEIGHT_SCALE_H
