@@ -6,20 +6,20 @@
 // --------------------------
 WeightScale::WeightScale()
     : lcd_(LCD_ADDR, LCD_COLS, LCD_ROWS),
-      bufferIndex_(0),
-      expFilteredWeight_(0.0f),
-      lockedWeight_(0.0f),
-      weightLocked_(false),
-      isZero_(false),
-      medianIndex_(0),
-      trimmedIndex_(0),
-      lastDisplayedWeight_(-9999.0f),
-      lastLcdUpdateMs_(0),
-      lastLockedState_(false),
-      hx711TaskHandle_(nullptr),
-      filterTaskHandle_(nullptr),
-      serialTaskHandle_(nullptr),
-      lcdTaskHandle_(nullptr) {
+    bufferIndex_(0),
+    expFilteredWeight_(0.0f),
+    lockedWeight_(0.0f),
+    weightLocked_(false),
+    isZero_(false),
+    medianIndex_(0),
+    trimmedIndex_(0),
+    lastDisplayedWeight_(-9999.0f),
+    lastLcdUpdateMs_(0),
+    lastLockedState_(false),
+    hx711TaskHandle_(nullptr),
+    filterTaskHandle_(nullptr),
+    serialTaskHandle_(nullptr),
+    lcdTaskHandle_(nullptr) {
 }
 
 WeightScale::~WeightScale() {
@@ -40,8 +40,11 @@ bool WeightScale::begin() {
     Serial.println(" DMA-PATHAO Smart Weight Scale ");
     Serial.printf(" Device ID: %s\n", DEVICE_ID);
     Serial.printf(" Device Model: %s\n", DEVICE_MODEL);
+    Serial.printf(" Batch ID: %s\n", BATCH_ID);
+    Serial.printf(" Manufacturing Date: %s\n", MANUFACTURING_DATE);
     Serial.printf(" Release from DMA: %s\n", RELEASE_DATE);
     Serial.printf(" Firmware: %s\n", FIRMWARE_VERSION);
+    Serial.printf(" Hardware: %s\n", HARDWARE_VERSION);
     Serial.printf(" Device Capacity: %.2f KG\n", DEVICE_CAPACITY_KG);
     Serial.println("==============================!");
     Serial.println();
