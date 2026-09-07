@@ -6,10 +6,11 @@
 // --------------------------
 WeightScale::WeightScale()
     #if defined(USE_LCD)
-    : lcd_(LCD_ADDR, LCD_COLS, LCD_ROWS),
+        : lcd_(LCD_ADDR, LCD_COLS, LCD_ROWS),
     #endif
+    
     #if defined(USE_SEVEN_SEGMENT)
-    : display_(DIN_PIN, CLK_PIN, STB_PIN),
+        : display_(DIN_PIN, CLK_PIN, STB_PIN),
     #endif
 
     bufferIndex_(0),
@@ -56,25 +57,24 @@ bool WeightScale::begin() {
     Serial.println();
 
     #if defined(USE_LCD)
-    // Initialize LCD
-    lcd_.init();
-    lcd_.backlight();
-    lcd_.clear();
-    lcd_.setCursor(0, 0);
-    lcd_.print("USB Serial Mode");
-    lcd_.setCursor(0, 1);
-    lcd_.print("Wt: ");
-    lcd_.setCursor(4, 1);
-    lcd_.print("--------");
+        // Initialize LCD
+        lcd_.init();
+        lcd_.backlight();
+        lcd_.clear();
+        lcd_.setCursor(0, 0);
+        lcd_.print("USB Serial Mode");
+        lcd_.setCursor(0, 1);
+        lcd_.print("Wt: ");
+        lcd_.setCursor(4, 1);
+        lcd_.print("--------");
     #endif
 
-     // Initialize seven-segment if selected
     #if defined(USE_SEVEN_SEGMENT)
         display_.begin();
-        // Show startup animation: dashes for a moment
-        display_.showDashes();
-        delay(1000);  // show for 1 second
-        display_.showWeight(0.0f);  // then show zero
+        display_.showDashes();          // startup animation: dashes on weight
+        display_.showTotalPriceMessage(); // fixed "USB PC" on total price
+        delay(1000);
+        display_.showWeight(0.0f);      // show zero on weight
     #endif
 
     // Button
@@ -136,11 +136,15 @@ bool WeightScale::begin() {
 void WeightScale::startCalibration() {
     Serial.println("\n--- CALIBRATION MODE ---");
     #if defined(USE_LCD)
-    lcd_.clear();
-    lcd_.setCursor(0, 0);
-    lcd_.print("Calibration Mode");
-    lcd_.setCursor(0, 1);
-    lcd_.print("Remove all Wt.");
+        lcd_.clear();
+        lcd_.setCursor(0, 0);
+        lcd_.print("Calibration Mode");
+        lcd_.setCursor(0, 1);
+        lcd_.print("Remove all Wt.");
+    #endif
+
+    #if defined(USE_SEVEN_SEGMENT)
+        display_.showDashes();          // startup animation: dashes on weight
     #endif
 
     scale_.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
@@ -150,14 +154,14 @@ void WeightScale::startCalibration() {
     scale_.tare();
     Serial.println("Tare complete");
     #if defined(USE_LCD)
-    lcd_.setCursor(0, 1);
-    lcd_.print("Tare complete  ");
+        lcd_.setCursor(0, 1);
+        lcd_.print("Tare complete  ");
     #endif
 
     Serial.println("Place known weight...");
     #if defined(USE_LCD)
-    lcd_.setCursor(0, 1);
-    lcd_.print("Place known Wt ");
+        lcd_.setCursor(0, 1);
+        lcd_.print("Place known Wt ");
     #endif
 
     // Wait for weight
@@ -168,8 +172,8 @@ void WeightScale::startCalibration() {
             if (fabs(rawReading) > CALIB_MIN_RAW_THRESHOLD) {
                 Serial.printf("Weight detected! Raw: %ld\n", rawReading);
                 #if defined(USE_LCD)
-                lcd_.setCursor(0, 1);
-                lcd_.print("Wt Detected    ");
+                    lcd_.setCursor(0, 1);
+                    lcd_.print("Wt Detected    ");
                 #endif
                 break;
             }
@@ -182,8 +186,8 @@ void WeightScale::startCalibration() {
     int stableCount = 0;
     Serial.println("Stabilizing...");
     #if defined(USE_LCD)
-    lcd_.setCursor(0, 1);
-    lcd_.print("Processing...  ");
+        lcd_.setCursor(0, 1);
+        lcd_.print("Processing...  ");
     #endif
 
     while (stableCount < CALIB_STABLE_COUNT) {
@@ -212,10 +216,12 @@ void WeightScale::startCalibration() {
 
     // Get known weight
     Serial.println("Enter known weight in grams:");
+
     #if defined(USE_LCD)
-    lcd_.setCursor(0, 1);
-    lcd_.print("Wait for Value ");
+        lcd_.setCursor(0, 1);
+        lcd_.print("Wait for Value ");
     #endif
+
     while (!Serial.available());
     float knownWeight = Serial.parseFloat();
 
@@ -381,6 +387,57 @@ void WeightScale::processFilter() {
 // --------------------------
 // Serial / locking task
 // --------------------------
+// void WeightScale::processSerialOutput() {
+//     float weight;
+//     float lastWeight = 0.0f;
+//     unsigned long stableStartTime = 0;
+//     bool stabilityTimerStarted = false;
+//     int removeCounter = 0;
+
+//     for (;;) {
+//         if (xQueueReceive(stableQueue_, &weight, portMAX_DELAY)) {
+//             // Snap near zero (2 grams)
+//             if (weight > -NEAR_ZERO_THRESHOLD && weight < NEAR_ZERO_THRESHOLD) {
+//                 weight = 0.0f;
+//             }
+
+//             // Unlock if weight removed
+//             if (weightLocked_) {
+//                 if (weight < REMOVE_THRESHOLD) {
+//                     removeCounter++;
+//                     if (removeCounter > 3) {
+//                         weightLocked_ = false;
+//                         removeCounter = 0;
+//                         Serial.println("Scale reset");
+//                         scale_.tare();
+//                     }
+//                 } else {
+//                     removeCounter = 0;
+//                 }
+//             }
+
+//             // Check stability & lock (now thresholds are in grams)
+//             if (!weightLocked_ && weight > MIN_LOCK_WEIGHT &&
+//                 fabs(weight - lastWeight) < STABILITY_THRESHOLD) {
+//                 if (!stabilityTimerStarted) {
+//                     stableStartTime = millis();
+//                     stabilityTimerStarted = true;
+//                 }
+//                 if (millis() - stableStartTime >= STABLE_TIME_MS) {
+//                     lockedWeight_ = weight;
+//                     weightLocked_ = true;
+//                     Serial.printf("Weight locked: %.3f KG\n", lockedWeight_ / 1000.0f); // convert to kg
+//                     stabilityTimerStarted = false;
+//                 }
+//             } else {
+//                 stabilityTimerStarted = false;
+//             }
+
+//             lastWeight = weight;
+//         }
+//     }
+// }
+
 void WeightScale::processSerialOutput() {
     float weight;
     float lastWeight = 0.0f;
@@ -390,7 +447,7 @@ void WeightScale::processSerialOutput() {
 
     for (;;) {
         if (xQueueReceive(stableQueue_, &weight, portMAX_DELAY)) {
-            // Snap near zero (2 grams)
+            // Snap near zero
             if (weight > -NEAR_ZERO_THRESHOLD && weight < NEAR_ZERO_THRESHOLD) {
                 weight = 0.0f;
             }
@@ -403,13 +460,24 @@ void WeightScale::processSerialOutput() {
                         weightLocked_ = false;
                         removeCounter = 0;
                         Serial.println("Scale reset");
+                        if (fabs(weight) > NEAR_ZERO_THRESHOLD) {
+                            scale_.tare();
+                            #if defined(USE_LCD)
+                                lcd_.setCursor(4, 1);
+                                lcd_.print("-----------");
+                            #endif
+                            #if defined(USE_SEVEN_SEGMENT)
+                                display_.showDashes();
+                                delay(500);
+                            #endif
+                        }
                     }
                 } else {
                     removeCounter = 0;
                 }
             }
 
-            // Check stability & lock (now thresholds are in grams)
+            // Check stability & lock
             if (!weightLocked_ && weight > MIN_LOCK_WEIGHT &&
                 fabs(weight - lastWeight) < STABILITY_THRESHOLD) {
                 if (!stabilityTimerStarted) {
@@ -419,7 +487,7 @@ void WeightScale::processSerialOutput() {
                 if (millis() - stableStartTime >= STABLE_TIME_MS) {
                     lockedWeight_ = weight;
                     weightLocked_ = true;
-                    Serial.printf("Weight locked: %.3f KG\n", lockedWeight_ / 1000.0f); // convert to kg
+                    Serial.printf("Weight locked: %.3f KG\n", lockedWeight_ / 1000.0f);
                     stabilityTimerStarted = false;
                 }
             } else {

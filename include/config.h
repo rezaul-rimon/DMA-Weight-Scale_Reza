@@ -5,13 +5,13 @@
 // --------------------------
 // Device Identification
 // --------------------------
-constexpr const char* DEVICE_ID = "12850020";
+constexpr const char* DEVICE_ID = "12850017";
 constexpr const char* APPID = "1285.2";
 constexpr const char* DEVICE_MODEL = "MEGA-T-20";
 constexpr const char* BATCH_ID = "2608.1";
 constexpr const char* MANUFACTURING_DATE = "01-09-2026";
-constexpr const char* RELEASE_DATE = "03-09-2026";
-constexpr const char* FIRMWARE_VERSION = "V2.263.1";
+constexpr const char* RELEASE_DATE = "07-09-2026";
+constexpr const char* FIRMWARE_VERSION = "V2.263.2";
 constexpr const char* HARDWARE_VERSION = "V1.263.1";
 constexpr float DEVICE_CAPACITY_KG = 20.0f;
 
@@ -26,25 +26,25 @@ constexpr int ADD_BTN_PIN = 25;                      // Button for calibration m
 // --------------------------
 // Display Selection
 // --------------------------
-// #define USE_LCD
-#define USE_SEVEN_SEGMENT
+#define USE_LCD
+// #define USE_SEVEN_SEGMENT
 
 // --------------------------
 // LCD Configuration
 // --------------------------
 #if defined(USE_LCD)
-constexpr uint8_t LCD_ADDR = 0x27;                   // I2C address
-constexpr uint8_t LCD_COLS = 16;
-constexpr uint8_t LCD_ROWS = 2;
+    constexpr uint8_t LCD_ADDR = 0x27;                   // I2C address
+    constexpr uint8_t LCD_COLS = 16;
+    constexpr uint8_t LCD_ROWS = 2;
 #endif
 
 // --------------------------
 // Seven Segment Configuration
 // --------------------------
 #if defined(USE_SEVEN_SEGMENT)
-#define DIN_PIN   21
-#define CLK_PIN   22
-#define STB_PIN   5
+    #define DIN_PIN   21
+    #define CLK_PIN   22
+    #define STB_PIN   5
 #endif
 
 // --------------------------
@@ -71,8 +71,8 @@ constexpr int STABLE_TIME_MS = 300;                   // Time in ms the weight m
 // --------------------------
 // Near-Zero Snapping
 // --------------------------
-constexpr float NEAR_ZERO_THRESHOLD = 4.0f;          // ±2 g considered zero
-constexpr float NEGATIVE_LIMIT = -5.0f;              // Allow negative readings down to -5 g
+constexpr float NEAR_ZERO_THRESHOLD = DEVICE_CAPACITY_KG * 0.1f;          // ±2 g considered zero
+constexpr float NEGATIVE_LIMIT = DEVICE_CAPACITY_KG * -0.1f;              // Allow negative readings down to -5 g
 
 // --------------------------
 // Display Lock Hysteresis (grams)

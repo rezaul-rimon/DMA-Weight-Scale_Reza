@@ -1,4 +1,5 @@
 #include "seven_seg.h"
+#include <string.h>
 
 // Segment bit definitions for GN6932
 #define SEG_A   0x20
@@ -24,6 +25,28 @@ static const uint8_t digitTable[10] = {
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_F | SEG_G           // 9
 };
 
+// Letter segment patterns (approximations)
+static const uint8_t segU = SEG_B | SEG_C | SEG_D | SEG_E | SEG_F;  // U
+static const uint8_t segS = SEG_A | SEG_F | SEG_G | SEG_C | SEG_D;   // S
+static const uint8_t segB = SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F | SEG_G; // B
+static const uint8_t segP = SEG_A | SEG_B | SEG_E | SEG_F | SEG_G;   // P
+static const uint8_t segC = SEG_A | SEG_D | SEG_E | SEG_F;           // C
+static const uint8_t segSpace = 0x00;                                 // blank
+
+uint8_t getCharSegments(char c) {
+    switch (c) {
+        case 'U': return segU;
+        case 'S': return segS;
+        case 'B': return segB;
+        case 'P': return segP;
+        case 'C': return segC;
+        case ' ': return segSpace;
+        case '8': return digitTable[8];   // use digit 8 pattern
+        default:  return segSpace;
+    }
+}
+
+// ---------------- Constructor ----------------
 SevenSegDisplay::SevenSegDisplay(uint8_t dinPin, uint8_t clkPin, uint8_t stbPin)
     : _dinPin(dinPin), _clkPin(clkPin), _stbPin(stbPin) {
 }
@@ -38,10 +61,7 @@ void SevenSegDisplay::begin() {
     digitalWrite(_stbPin, HIGH);
 
     delay(10);
-
-    // Display ON, max brightness
-    command(0x8F);
-
+    command(0x8F);   // Display ON, max brightness
     clear();
 }
 
@@ -50,15 +70,7 @@ void SevenSegDisplay::clear() {
     updateDisplay();
 }
 
-void SevenSegDisplay::showDashes() {
-    clear();
-    for (int i = 1; i <= 5; i++) {
-        setDigit(i, 0);                     // value 0 is ignored but we want only G segment
-        _buffer[i - 1] = SEG_G;             // set only segment G (dash)
-    }
-    updateDisplay();
-}
-
+// ---------------- Low-level communication ----------------
 void SevenSegDisplay::writeByte(uint8_t data) {
     for (int i = 0; i < 8; i++) {
         digitalWrite(_clkPin, LOW);
@@ -90,12 +102,105 @@ void SevenSegDisplay::setDigit(uint8_t position, uint8_t value, bool decimalPoin
     _buffer[position - 1] = digitTable[value] | (decimalPoint ? SEG_DP : 0);
 }
 
-// Display integer number (0 - 99999) on 5 digits
+// ---------------- Display functions ----------------
+// Show dashes on weight digits (positions 1-5), without disturbing total price
+void SevenSegDisplay::showDashes() {
+    // Clear only first 5 digits
+    for (int i = 0; i < 5; i++) _buffer[i] = 0x00;
+    for (int i = 0; i < 5; i++) {
+        _buffer[i] = SEG_G;   // dash on each weight digit
+    }
+    updateDisplay();
+}
+
+// Show "USB PC" on total price digits (positions 11-16)
+void SevenSegDisplay::showTotalPriceMessage() {
+    const char* msg = "USB PC";   // 6 chars
+    int pos = 11;                 // start at physical digit 11
+    int len = strlen(msg);
+    for (int i = 0; i < len && pos <= 16; i++) {
+        _buffer[pos - 1] = getCharSegments(msg[i]);
+        pos++;
+    }
+    updateDisplay();
+}
+
+// Show weight on positions 1-5 (does not affect total price)
+void SevenSegDisplay::showWeight(float weightKg) {
+    // Clear only the weight digits
+    for (int i = 0; i < 5; i++) _buffer[i] = 0x00;
+
+    bool negative = weightKg < 0.0f;
+    float absWeight = fabs(weightKg);
+
+    int thousandths = (int)(absWeight * 1000.0f + 0.5f);
+    if (thousandths > 99999) thousandths = 99999;
+
+    // Zero case
+    if (thousandths == 0 && !negative) {
+        setDigit(5, 0);
+        updateDisplay();
+        return;
+    }
+
+    // Negative < 1 kg: show "-0.XXX"
+    if (negative && thousandths < 1000) {
+        int hundreds = (thousandths / 100) % 10;
+        int tens = (thousandths / 10) % 10;
+        int ones = thousandths % 10;
+        _buffer[0] = SEG_G;       // minus sign
+        setDigit(2, 0, true);     // '0' with decimal
+        setDigit(3, hundreds, false);
+        setDigit(4, tens, false);
+        setDigit(5, ones, false);
+        updateDisplay();
+        return;
+    }
+
+    int integerPart = thousandths / 1000;
+
+    if (integerPart == 0) {
+        // 0.XXX
+        int hundreds = (thousandths / 100) % 10;
+        int tens = (thousandths / 10) % 10;
+        int ones = thousandths % 10;
+        _buffer[0] = 0x00;       // blank
+        setDigit(2, 0, true);
+        setDigit(3, hundreds, false);
+        setDigit(4, tens, false);
+        setDigit(5, ones, false);
+    } else if (integerPart < 10) {
+        // X.XXX
+        int tenths = (thousandths / 100) % 10;
+        int hundredths = (thousandths / 10) % 10;
+        int thousandthsDigit = thousandths % 10;
+        _buffer[0] = 0x00;       // blank
+        setDigit(2, integerPart, true);
+        setDigit(3, tenths, false);
+        setDigit(4, hundredths, false);
+        setDigit(5, thousandthsDigit, false);
+    } else {
+        // XX.XXX
+        int tens = integerPart / 10;
+        int ones = integerPart % 10;
+        int tenths = (thousandths / 100) % 10;
+        int hundredths = (thousandths / 10) % 10;
+        int thousandthsDigit = thousandths % 10;
+        setDigit(1, tens, false);
+        setDigit(2, ones, true);
+        setDigit(3, tenths, false);
+        setDigit(4, hundredths, false);
+        setDigit(5, thousandthsDigit, false);
+    }
+
+    updateDisplay();
+}
+
+// For testing only (unused in production)
 void SevenSegDisplay::showNumber(int number) {
     clear();
     if (number < 0) number = 0;
     if (number > 99999) number = 99999;
-
     setDigit(1, (number / 10000) % 10);
     setDigit(2, (number / 1000) % 10);
     setDigit(3, (number / 100) % 10);
@@ -103,86 +208,3 @@ void SevenSegDisplay::showNumber(int number) {
     setDigit(5, number % 10);
     updateDisplay();
 }
-
-
-// Display weight in kilograms with 3 decimal places (e.g., 12.345)
-void SevenSegDisplay::showWeight(float weightKg) {
-    clear();
-
-    bool negative = weightKg < 0.0f;
-    float absWeight = fabs(weightKg);
-
-    // Convert to thousandths (0.001 kg)
-    int thousandths = (int)(absWeight * 1000.0f + 0.5f);
-    if (thousandths > 99999) thousandths = 99999;   // max 99.999 kg
-
-    // Special case: exactly zero -> show single "0" on rightmost digit
-    if (thousandths == 0 && !negative) {
-        setDigit(5, 0);
-        updateDisplay();
-        return;
-    }
-
-    // If negative and magnitude < 1 kg, show "-0.XXX" using all 5 digits
-    if (negative && thousandths < 1000) {
-        int hundreds = (thousandths / 100) % 10;
-        int tens = (thousandths / 10) % 10;
-        int ones = thousandths % 10;
-
-        _buffer[0] = SEG_G;                      // minus sign
-        setDigit(2, 0, true);                    // '0' with decimal point
-        setDigit(3, hundreds, false);
-        setDigit(4, tens, false);
-        setDigit(5, ones, false);
-        updateDisplay();
-        return;
-    }
-
-    // For negative values with magnitude >= 1 kg, just show minus and clamp to 0.999?
-    // For simplicity, we'll treat them as positive for now (rare case)
-    // Actually, we can show minus sign and then the integer part with decimal,
-    // but we have only 5 digits. We'll ignore this edge case.
-
-    int integerPart = thousandths / 1000;
-
-    if (integerPart == 0) {
-        // Weight < 1 kg (positive)
-        int hundreds = (thousandths / 100) % 10;
-        int tens = (thousandths / 10) % 10;
-        int ones = thousandths % 10;
-
-        _buffer[0] = 0x00;                     // digit 1 blank
-        setDigit(2, 0, true);                  // digit 2 = "0."
-        setDigit(3, hundreds, false);
-        setDigit(4, tens, false);
-        setDigit(5, ones, false);
-    } else if (integerPart < 10) {
-        // 1–9 kg
-        int tenths = (thousandths / 100) % 10;
-        int hundredths = (thousandths / 10) % 10;
-        int thousandthsDigit = thousandths % 10;
-
-        _buffer[0] = 0x00;                     // blank
-        setDigit(2, integerPart, true);        // digit 2 = "X."
-        setDigit(3, tenths, false);
-        setDigit(4, hundredths, false);
-        setDigit(5, thousandthsDigit, false);
-    } else {
-        // 10–99 kg
-        int tens = integerPart / 10;
-        int ones = integerPart % 10;
-        int tenths = (thousandths / 100) % 10;
-        int hundredths = (thousandths / 10) % 10;
-        int thousandthsDigit = thousandths % 10;
-
-        setDigit(1, tens, false);
-        setDigit(2, ones, true);               // decimal after second digit
-        setDigit(3, tenths, false);
-        setDigit(4, hundredths, false);
-        setDigit(5, thousandthsDigit, false);
-    }
-
-    updateDisplay();
-}
-
-
