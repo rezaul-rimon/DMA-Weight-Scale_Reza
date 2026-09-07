@@ -5,7 +5,13 @@
 // Constructor / Destructor
 // --------------------------
 WeightScale::WeightScale()
+    #if defined(USE_LCD)
     : lcd_(LCD_ADDR, LCD_COLS, LCD_ROWS),
+    #endif
+    #if defined(USE_SEVEN_SEGMENT)
+    : display_(DIN_PIN, CLK_PIN, STB_PIN),
+    #endif
+
     bufferIndex_(0),
     expFilteredWeight_(0.0f),
     lockedWeight_(0.0f),
@@ -49,6 +55,7 @@ bool WeightScale::begin() {
     Serial.println("==============================!");
     Serial.println();
 
+    #if defined(USE_LCD)
     // Initialize LCD
     lcd_.init();
     lcd_.backlight();
@@ -59,6 +66,16 @@ bool WeightScale::begin() {
     lcd_.print("Wt: ");
     lcd_.setCursor(4, 1);
     lcd_.print("--------");
+    #endif
+
+     // Initialize seven-segment if selected
+    #if defined(USE_SEVEN_SEGMENT)
+        display_.begin();
+        // Show startup animation: dashes for a moment
+        display_.showDashes();
+        delay(1000);  // show for 1 second
+        display_.showWeight(0.0f);  // then show zero
+    #endif
 
     // Button
     pinMode(ADD_BTN_PIN, INPUT_PULLUP);
@@ -118,11 +135,13 @@ bool WeightScale::begin() {
 // --------------------------
 void WeightScale::startCalibration() {
     Serial.println("\n--- CALIBRATION MODE ---");
+    #if defined(USE_LCD)
     lcd_.clear();
     lcd_.setCursor(0, 0);
     lcd_.print("Calibration Mode");
     lcd_.setCursor(0, 1);
     lcd_.print("Remove all Wt.");
+    #endif
 
     scale_.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
     delay(5000);
@@ -130,12 +149,16 @@ void WeightScale::startCalibration() {
     scale_.set_scale();
     scale_.tare();
     Serial.println("Tare complete");
+    #if defined(USE_LCD)
     lcd_.setCursor(0, 1);
     lcd_.print("Tare complete  ");
+    #endif
 
     Serial.println("Place known weight...");
+    #if defined(USE_LCD)
     lcd_.setCursor(0, 1);
     lcd_.print("Place known Wt ");
+    #endif
 
     // Wait for weight
     long rawReading = 0;
@@ -144,8 +167,10 @@ void WeightScale::startCalibration() {
             rawReading = scale_.get_units(10);
             if (fabs(rawReading) > CALIB_MIN_RAW_THRESHOLD) {
                 Serial.printf("Weight detected! Raw: %ld\n", rawReading);
+                #if defined(USE_LCD)
                 lcd_.setCursor(0, 1);
                 lcd_.print("Wt Detected    ");
+                #endif
                 break;
             }
         }
@@ -156,8 +181,10 @@ void WeightScale::startCalibration() {
     long previous = scale_.get_units(10);
     int stableCount = 0;
     Serial.println("Stabilizing...");
+    #if defined(USE_LCD)
     lcd_.setCursor(0, 1);
     lcd_.print("Processing...  ");
+    #endif
 
     while (stableCount < CALIB_STABLE_COUNT) {
         long current = scale_.get_units(10);
@@ -185,8 +212,10 @@ void WeightScale::startCalibration() {
 
     // Get known weight
     Serial.println("Enter known weight in grams:");
+    #if defined(USE_LCD)
     lcd_.setCursor(0, 1);
     lcd_.print("Wait for Value ");
+    #endif
     while (!Serial.available());
     float knownWeight = Serial.parseFloat();
 
@@ -413,22 +442,55 @@ void WeightScale::processLcdUpdates() {
     for (;;) {
         if (xQueueReceive(lcdQueue_, &weight, portMAX_DELAY)) {
             now = millis();
-            bool locked = weightLocked_;  // Read shared variable (consider mutex if needed)
 
+            // Apply near-zero snapping (same as serial task)
+            if (weight > -NEAR_ZERO_THRESHOLD && weight < NEAR_ZERO_THRESHOLD) {
+                weight = 0.0f;
+            }
+
+            // Decide what to display
+            float displayWeightGrams;
+            bool locked = weightLocked_;
+
+            if (locked) {
+                // If locked, show locked weight unless live weight deviates significantly
+                if (fabs(weight - lockedWeight_) <= DISPLAY_LOCK_HYSTERESIS_GRAMS) {
+                    displayWeightGrams = lockedWeight_;
+                } else {
+                    displayWeightGrams = weight;
+                }
+            } else {
+                displayWeightGrams = weight;
+            }
+
+            float displayWeightKg = displayWeightGrams / 1000.0f;
+
+            // Force update when lock state changes OR when locked weight differs from last displayed
             bool forceUpdate = (locked != lastLockedState_);
-            bool significantChange = fabs(weight - lastDisplayedWeight_) > LCD_DEADBAND_GRAMS;
+            if (locked && fabs(lastDisplayedWeight_ - lockedWeight_) > 0.01f) {
+                forceUpdate = true;
+            }
+
+            bool significantChange = fabs(displayWeightGrams - lastDisplayedWeight_) > LCD_DEADBAND_GRAMS;
             bool timeElapsed = (now - lastLcdUpdateMs_) >= LCD_MIN_INTERVAL_MS;
 
             if (forceUpdate || (significantChange && timeElapsed)) {
-                // Convert grams to kilograms for display
-                snprintf(line, sizeof(line), "%7.3f KG", weight / 1000.0f);
-                lcd_.setCursor(4, 1);
-                lcd_.print(line);
+                #if defined(USE_LCD)
+                    snprintf(line, sizeof(line), "%7.3f KG", displayWeightKg);
+                    lcd_.setCursor(4, 1);
+                    lcd_.print(line);
+                #endif
 
-                lastDisplayedWeight_ = weight;
+                #if defined(USE_SEVEN_SEGMENT)
+                    display_.showWeight(displayWeightKg);
+                #endif
+
+                // Update state
+                lastDisplayedWeight_ = displayWeightGrams;
                 lastLcdUpdateMs_ = now;
                 lastLockedState_ = locked;
             }
         }
     }
 }
+

@@ -9,6 +9,7 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 #include "config.h"
+#include "seven_seg.h"
 
 class WeightScale {
 public:
@@ -27,7 +28,14 @@ public:
 private:
     // Hardware
     HX711 scale_;
+    #if defined(USE_LCD)
     LiquidCrystal_I2C lcd_;
+    #endif
+
+    #if defined(USE_SEVEN_SEGMENT)
+    SevenSegDisplay display_;
+    #endif
+    
     Preferences prefs_;
 
     // Queues

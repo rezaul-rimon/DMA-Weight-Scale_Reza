@@ -5,7 +5,7 @@
 // --------------------------
 // Device Identification
 // --------------------------
-constexpr const char* DEVICE_ID = "12850001";
+constexpr const char* DEVICE_ID = "12850020";
 constexpr const char* APPID = "1285.2";
 constexpr const char* DEVICE_MODEL = "MEGA-T-20";
 constexpr const char* BATCH_ID = "2608.1";
@@ -24,11 +24,28 @@ constexpr int LOADCELL_SCK_PIN = 19;
 constexpr int ADD_BTN_PIN = 25;                      // Button for calibration mode
 
 // --------------------------
+// Display Selection
+// --------------------------
+// #define USE_LCD
+#define USE_SEVEN_SEGMENT
+
+// --------------------------
 // LCD Configuration
 // --------------------------
+#if defined(USE_LCD)
 constexpr uint8_t LCD_ADDR = 0x27;                   // I2C address
 constexpr uint8_t LCD_COLS = 16;
 constexpr uint8_t LCD_ROWS = 2;
+#endif
+
+// --------------------------
+// Seven Segment Configuration
+// --------------------------
+#if defined(USE_SEVEN_SEGMENT)
+#define DIN_PIN   21
+#define CLK_PIN   22
+#define STB_PIN   5
+#endif
 
 // --------------------------
 // Filter Parameters
@@ -54,8 +71,13 @@ constexpr int STABLE_TIME_MS = 300;                   // Time in ms the weight m
 // --------------------------
 // Near-Zero Snapping
 // --------------------------
-constexpr float NEAR_ZERO_THRESHOLD = 2.0f;          // ±2 g considered zero
+constexpr float NEAR_ZERO_THRESHOLD = 4.0f;          // ±2 g considered zero
 constexpr float NEGATIVE_LIMIT = -5.0f;              // Allow negative readings down to -5 g
+
+// --------------------------
+// Display Lock Hysteresis (grams)
+// --------------------------
+constexpr float DISPLAY_LOCK_HYSTERESIS_GRAMS = 5.0f;   // display shows locked weight if within ±15 g
 
 // --------------------------
 // LCD Update Control
