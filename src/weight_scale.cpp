@@ -464,7 +464,7 @@ void WeightScale::processSerialOutput() {
                             scale_.tare();
                             #if defined(USE_LCD)
                                 lcd_.setCursor(4, 1);
-                                lcd_.print("-----------");
+                                lcd_.print("-------");
                             #endif
                             #if defined(USE_SEVEN_SEGMENT)
                                 display_.showDashes();

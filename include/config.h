@@ -5,12 +5,12 @@
 // --------------------------
 // Device Identification
 // --------------------------
-constexpr const char* DEVICE_ID = "12850017";
+constexpr const char* DEVICE_ID = "12850010";
 constexpr const char* APPID = "1285.2";
 constexpr const char* DEVICE_MODEL = "MEGA-T-20";
-constexpr const char* BATCH_ID = "2608.1";
-constexpr const char* MANUFACTURING_DATE = "01-09-2026";
-constexpr const char* RELEASE_DATE = "07-09-2026";
+constexpr const char* BATCH_ID = "2606.1";
+constexpr const char* MANUFACTURING_DATE = "01-06-2026";
+constexpr const char* RELEASE_DATE = "01-06-2026";
 constexpr const char* FIRMWARE_VERSION = "V2.263.2";
 constexpr const char* HARDWARE_VERSION = "V1.263.1";
 constexpr float DEVICE_CAPACITY_KG = 20.0f;
@@ -26,8 +26,8 @@ constexpr int ADD_BTN_PIN = 25;                      // Button for calibration m
 // --------------------------
 // Display Selection
 // --------------------------
-#define USE_LCD
-// #define USE_SEVEN_SEGMENT
+// #define USE_LCD
+#define USE_SEVEN_SEGMENT
 
 // --------------------------
 // LCD Configuration
